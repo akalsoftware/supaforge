@@ -14,7 +14,8 @@ const clientConfigs: Array<Record<string, unknown>> = []
 
 vi.mock('pg', () => ({
   default: {
-    Client: vi.fn((config: Record<string, unknown>) => {
+    // `function`, not an arrow: the code under test calls `new pg.Client()`.
+    Client: vi.fn(function (config: Record<string, unknown>) {
       clientConfigs.push(config)
       const behaviour = clientQueue.shift() ?? {}
       return {
