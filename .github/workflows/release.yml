@@ -139,6 +139,12 @@ jobs:
         working-directory: packages/cli
         run: npm run build
 
+      # Nothing ships that is not on the allow-list, over budget, or broken
+      # once installed from the tarball.
+      - name: Check the package
+        working-directory: packages/cli
+        run: node scripts/check-package.mjs
+
       - name: Determine npm dist-tag
         id: dist-tag
         run: |
