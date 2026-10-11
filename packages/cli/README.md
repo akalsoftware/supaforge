@@ -51,7 +51,7 @@ Everything that writes previews first. Add `--apply` to make it happen.
 | Vault | Secret names and descriptions (values can't be read) | Command to run |
 | Extensions | `pg_extension` | SQL |
 | Migration history | Local migration files against `supabase_migrations` (target only) | SQL, opt-in |
-| Roles and grants | Custom roles, and grants including `anon`, `authenticated`, `service_role` | SQL |
+| Roles and grants | Custom roles, and grants on tables, views, sequences and functions, including `anon`, `authenticated`, `service_role` | SQL |
 
 The schema check covers tables, columns, keys, indexes, partitions, views,
 materialized views, functions, triggers, sequences, enums, composite types,
@@ -113,9 +113,10 @@ Useful `diff` flags:
   a Supabase schema the target lacks, is skipped with the reason, and the rest
   still applies.
 - **`--prove`.** The fixes are replayed on a structure-only copy of the target,
-  made on the target's own server. Nothing is applied unless the result matches
-  the source. Changes a copy can't hold, such as cron jobs (pg_cron lives in
-  one database per server), are listed as not proved.
+  made on the target's own server, the way the apply will run them. Nothing is
+  applied unless the result matches the source, and nothing is applied if the
+  proof can't run. Changes a copy can't hold, such as cron jobs (pg_cron lives
+  in one database per server), are listed as not proved.
 
 ```bash
 supaforge diff --dry-run                 # the plan, in order
@@ -239,7 +240,7 @@ supaforge migrate run --env=prod --apply
 | `SUPAFORGE_DBDIFF_MEMORY` | `1G` | Memory limit for `@dbdiff/cli` (`2G`, `-1` for none) |
 | `SUPAFORGE_CONNECT_TIMEOUT` | `15` | Seconds to wait for a connection |
 | `SUPAFORGE_CHECK_CONCURRENCY` | `4` | Checks run at once. Lower it behind a tight pooler |
-| `SUPAFORGE_PG_BIN` | — | A directory of PostgreSQL client tools (`pg_dump`, `psql`) to use when the ones on `PATH` are too old for a server |
+| `SUPAFORGE_PG_BIN` | — | A directory of PostgreSQL client tools (`pg_dump`, `psql`), used ahead of `PATH` — for a server newer than the tools on `PATH` |
 
 ## Self-hosted Supabase
 
