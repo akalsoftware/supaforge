@@ -1,0 +1,87 @@
+name: Security & Package
+
+# Dependency advisories, dependency changes on PRs, and what the published
+# package actually contains. Runs on every PR and push to main, and weekly so
+# an advisory published after a merge is caught without waiting for a change.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  npm-audit:
+    name: npm audit (${{ matrix.package }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [cli, mcp]
+    defaults:
+      run:
+        working-directory: packages/${{ matrix.package }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+
+      # The full report, dev tooling included, for the log. Never fails.
+      - name: Report all advisories
+        run: npm audit || true
+
+      # What users install: fail on any high or critical advisory.
+      - name: Runtime dependencies (high and above)
+        run: npm audit --omit=dev --audit-level=high
+
+      # Dev tooling runs in CI with repository access, so a critical there
+      # matters too.
+      - name: All dependencies (critical)
+        run: npm audit --audit-level=critical
+
+  # Flags a PR that adds or upgrades a dependency into a known advisory, before
+  # it merges — npm audit only sees the lockfile once it already has.
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: on-failure
+
+  package:
+    name: Package contents & size
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/cli
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+          cache-dependency-path: packages/cli/package-lock.json
+
+      - run: npm ci
+      - run: npm run build
+
+      # Allow-list of shipped files, size budgets, then install the tarball
+      # into an empty directory and run it.
+      - name: Check the package
+        run: node scripts/check-package.mjs

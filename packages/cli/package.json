@@ -20,8 +20,9 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
-    "bin",
-    "dist"
+    "bin/run.js",
+    "dist",
+    "!dist/**/*.map"
   ],
   "publishConfig": {
     "access": "public"
@@ -55,7 +56,7 @@
   "dependencies": {
     "@akal/pg-conformance": "~0.0.15",
     "@dbdiff/cli": "3.0.0-rc.25",
-    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "@oclif/core": "^4",
     "@supabase/supabase-js": "^2.103.0",
     "libpg-query": "~18.1.5",
@@ -68,9 +69,9 @@
     "tsup": "^8.5.1",
     "tsx": "^4",
     "typescript": "^5",
-    "vitest": "^3"
+    "vitest": "^4.1.11"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
   }
 }

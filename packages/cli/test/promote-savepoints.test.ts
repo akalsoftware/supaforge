@@ -12,7 +12,8 @@ let committed = new Set<string>()
 
 vi.mock('pg', () => ({
   default: {
-    Client: vi.fn(() => {
+    // `function`, not an arrow: the code under test calls `new pg.Client()`.
+    Client: vi.fn(function () {
       let pending = new Set<string>()
       let atSavepoint = new Set<string>()
       return {
