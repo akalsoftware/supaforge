@@ -34,6 +34,18 @@ supaforge diff --apply      # fix the target
 
 Everything that writes previews first. Add `--apply` to make it happen.
 
+## Install
+
+| | |
+| --- | --- |
+| npm | `npm install -g @akal/supaforge`, or run it with `npx @akal/supaforge` |
+| Homebrew | `brew install akalsoftware/tap/supaforge` |
+| GitHub Actions | [`akalsoftware/supaforge-action`](https://github.com/akalsoftware/supaforge-action) — see [CI](#ci-and-exit-codes) |
+| Cursor, VS Code, Claude | One-click installs of the MCP server — see [MCP](#mcp-ai-agents) |
+
+It needs Node.js 20 or newer. DBDiff, its diff engine, comes with it as a
+native binary for your platform, so there is nothing else to install.
+
 ## What it compares
 
 | Check | What it reads | Fixed with |
@@ -271,11 +283,20 @@ would push the clone's shape, absences included, onto the target.
 
 ## CI and exit codes
 
+The [GitHub Action](https://github.com/akalsoftware/supaforge-action) runs
+`diff --ci` and adds a summary of the drift to the job page:
+
 ```yaml
-- run: npx @akal/supaforge diff --ci
+- uses: akalsoftware/supaforge-action@v1
   env:
     DEV_DATABASE_URL: ${{ secrets.DEV_DATABASE_URL }}
     PROD_DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+```
+
+Anywhere else, run the CLI:
+
+```bash
+npx @akal/supaforge diff --ci
 ```
 
 | Code | Meaning |
@@ -299,7 +320,15 @@ drift and fix it, asking you before anything is written.
   (`supaforge-<version>-<platform>.mcpb`) from the
   [latest release](https://github.com/akalsoftware/supaforge/releases/latest)
   and open it. It asks for your project directory.
-- **Claude Code**: `claude mcp add supaforge -- npx -y @akal/supaforge mcp`
+- **Claude Code**: install the plugin, which adds the MCP server and a skill
+  for applying fixes safely:
+
+  ```
+  /plugin marketplace add akalsoftware/claude-plugins
+  /plugin install supaforge@akalsoftware
+  ```
+
+  or add just the server: `claude mcp add supaforge -- npx -y @akal/supaforge mcp`
 - **Any other client**:
 
   ```json

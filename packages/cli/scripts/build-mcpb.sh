@@ -20,6 +20,12 @@ mkdir -p "$work/server"
 sed -e "s/__VERSION__/$version/" -e "s/__OS__/$os/" "$here/mcpb/manifest.template.json" > "$work/manifest.json"
 cp "$here/LICENSE" "$work/LICENSE"
 
+# Run straight after `npm publish`, the registry may not serve it yet.
+for _ in $(seq 1 30); do
+  npm view "@akal/supaforge@$version" version >/dev/null 2>&1 && break
+  sleep 10
+done
+
 (cd "$work/server" && echo '{"private":true}' > package.json \
   && npm install --omit=dev --no-audit --no-fund --loglevel=error --os="$os" --cpu="$cpu" "@akal/supaforge@$version")
 
