@@ -142,4 +142,6 @@ docs/
 
 # Supaforge
 supaforge.config.json
+# The VS Code extension's test project: $VAR references only, no credentials.
+!packages/vscode/test/fixture/supaforge.config.json
 .supaforge/
