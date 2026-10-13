@@ -13,6 +13,7 @@ import { readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { PgHarness } from '../harness/PgHarness.js'
@@ -65,8 +66,10 @@ describeE2E('e2e: the MCP server does not leak across many calls', () => {
     const entry = join(fileURLToPath(new URL('.', import.meta.url)), '..', '..', 'bin', 'run.js')
     transport = new StdioClientTransport({
       command: process.execPath,
-      args: [entry, 'mcp'],
-      cwd: ws,
+      // Started elsewhere and pointed at the project, as an editor or Claude
+      // Desktop starts it: the config must come from --project, not the cwd.
+      args: [entry, 'mcp', '--project', ws],
+      cwd: tmpdir(),
       env: { ...process.env, NO_COLOR: '1', CI: '1' } as Record<string, string>,
       stderr: 'ignore',
     })

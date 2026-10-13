@@ -1,0 +1,33 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.akalsoftware/supaforge",
+  "title": "SupaForge",
+  "description": "Find and fix drift between Supabase environments: schema, RLS, roles, auth, storage and more.",
+  "repository": {
+    "url": "https://github.com/akalsoftware/supaforge",
+    "source": "github",
+    "subfolder": "packages/cli"
+  },
+  "websiteUrl": "https://supaforge.dev",
+  "version": "0.0.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "@akal/supaforge",
+      "version": "0.0.0",
+      "runtimeHint": "npx",
+      "transport": { "type": "stdio" },
+      "packageArguments": [
+        { "type": "positional", "value": "mcp" },
+        {
+          "type": "named",
+          "name": "--project",
+          "description": "Project directory holding supaforge.config.json. Defaults to the directory the server starts in.",
+          "format": "filepath",
+          "isRequired": false
+        }
+      ]
+    }
+  ]
+}

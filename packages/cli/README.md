@@ -289,9 +289,25 @@ would push the clone's shape, absences included, onto the target.
 
 ## MCP (AI agents)
 
-```json
-{ "mcpServers": { "supaforge": { "command": "supaforge", "args": ["mcp"] } } }
-```
+SupaForge runs as an MCP server, so an AI agent in your editor can scan for
+drift and fix it, asking you before anything is written.
+
+[![Add to Cursor](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/install-mcp?name=supaforge&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIkBha2FsL3N1cGFmb3JnZSIsIm1jcCIsIi0tcHJvamVjdCIsIiR7d29ya3NwYWNlRm9sZGVyfSJdfQ==)
+[![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_SupaForge-0098FF?logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=supaforge&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22%40akal%2Fsupaforge%22%2C%22mcp%22%2C%22--project%22%2C%22%24%7BworkspaceFolder%7D%22%5D%7D)
+
+- **Claude Desktop**: download the extension for your platform
+  (`supaforge-<version>-<platform>.mcpb`) from the
+  [latest release](https://github.com/akalsoftware/supaforge/releases/latest)
+  and open it. It asks for your project directory.
+- **Claude Code**: `claude mcp add supaforge -- npx -y @akal/supaforge mcp`
+- **Any other client**:
+
+  ```json
+  { "mcpServers": { "supaforge": { "command": "npx", "args": ["-y", "@akal/supaforge", "mcp", "--project", "/path/to/project"] } } }
+  ```
+
+It is listed in the [MCP Registry](https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.akalsoftware/supaforge)
+as `io.github.akalsoftware/supaforge`.
 
 The server exposes these tools:
 
@@ -303,8 +319,9 @@ The server exposes these tools:
 | `take_snapshot` | Writes files |
 | `create_migration` | Writes files |
 
-It reads the config in its own directory, and refuses a `configPath` from a
-client unless started with `--allow-config-path`.
+It reads `supaforge.config.json` in the directory given by `--project` (or the
+one it starts in), and refuses a `configPath` from a client unless started
+with `--allow-config-path`.
 
 ## Hooks
 

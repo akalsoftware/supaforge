@@ -170,3 +170,85 @@ jobs:
               exit "$code"
             fi
           fi
+
+  # The MCP Registry (registry.modelcontextprotocol.io) lists the server, and
+  # through it GitHub's MCP registry and VS Code's @mcp gallery. It holds
+  # metadata only and checks it against the npm package — the package's
+  # mcpName must match server.json's name — so this runs once npm has the
+  # version. Authenticated by GitHub OIDC: no secret, and the
+  # io.github.akalsoftware/ namespace comes from this repository's owner.
+  mcp-registry:
+    name: Publish to MCP Registry
+    runs-on: ubuntu-latest
+    needs: [publish-npm]
+    if: ${{ !contains(inputs.tag_name, '-') }}
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: packages/cli
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag_name }}
+
+      - name: Set the version in server.json
+        env:
+          TAG: ${{ inputs.tag_name }}
+        run: |
+          VERSION="${TAG#v}"
+          jq --arg v "$VERSION" '.version = $v | .packages[0].version = $v' server.json > server.tmp && mv server.tmp server.json
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      # The registry reads the package from npm, which can lag the publish.
+      - name: Wait for npm to serve the version
+        run: |
+          for _ in $(seq 1 30); do
+            if [ "$(npm view "@akal/supaforge@$VERSION" mcpName 2>/dev/null)" = "$(jq -r .name server.json)" ]; then exit 0; fi
+            sleep 10
+          done
+          echo "::error::@akal/supaforge@$VERSION with mcpName is not on npm"; exit 1
+
+      - name: Install mcp-publisher
+        run: |
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/download/v1.8.1/mcp-publisher_linux_amd64.tar.gz" | tar xz mcp-publisher
+
+      - name: Publish
+        run: |
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish
+
+  # Claude Desktop extensions: one .mcpb per platform, each carrying that
+  # platform's DBDiff binary, attached to the GitHub Release for a one-click
+  # install. Built from the version just published to npm.
+  mcpb:
+    name: Claude Desktop extension (${{ matrix.platform }})
+    runs-on: ubuntu-latest
+    needs: [publish-npm, create-release]
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [darwin-arm64, darwin-x64, linux-x64, linux-arm64, win32-x64, win32-arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag_name }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+
+      - name: Build
+        working-directory: packages/cli
+        env:
+          TAG: ${{ inputs.tag_name }}
+        run: scripts/build-mcpb.sh "${TAG#v}" "${{ matrix.platform }}" dist-mcpb
+
+      - name: Attach to the release
+        working-directory: packages/cli
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ inputs.tag_name }}" dist-mcpb/*.mcpb --clobber --repo "${{ github.repository }}"
