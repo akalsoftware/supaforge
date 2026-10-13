@@ -1,0 +1,60 @@
+{
+  "name": "supaforge",
+  "displayName": "SupaForge",
+  "description": "Find and fix drift between Supabase environments — and let your AI agent do it, with your approval.",
+  "version": "0.0.33",
+  "publisher": "akalsoftware",
+  "license": "MIT",
+  "icon": "icon.png",
+  "homepage": "https://supaforge.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/akalsoftware/supaforge",
+    "directory": "packages/vscode"
+  },
+  "bugs": {
+    "url": "https://github.com/akalsoftware/supaforge/issues"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": ["AI", "Other"],
+  "keywords": ["supabase", "postgres", "database", "drift", "migrations", "rls", "mcp"],
+  "galleryBanner": { "color": "#111111", "theme": "dark" },
+  "main": "./extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "contributes": {
+    "mcpServerDefinitionProviders": [
+      { "id": "supaforge", "label": "SupaForge" }
+    ],
+    "commands": [
+      { "command": "supaforge.diff", "title": "Find Drift", "category": "SupaForge" },
+      { "command": "supaforge.diffDetail", "title": "Find Drift, with the SQL", "category": "SupaForge" },
+      { "command": "supaforge.preview", "title": "Preview Fixes", "category": "SupaForge" },
+      { "command": "supaforge.apply", "title": "Apply Fixes…", "category": "SupaForge" },
+      { "command": "supaforge.snapshot", "title": "Snapshot an Environment…", "category": "SupaForge" },
+      { "command": "supaforge.init", "title": "Create Config", "category": "SupaForge" },
+      { "command": "supaforge.docs", "title": "Open Documentation", "category": "SupaForge" }
+    ],
+    "configuration": {
+      "title": "SupaForge",
+      "properties": {
+        "supaforge.cliVersion": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "The `@akal/supaforge` version to run, e.g. `latest`. Empty runs the version this extension was released with."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "test": "vscode-test",
+    "package": "vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.6.0",
+    "ovsx": "^0.10.5"
+  }
+}
