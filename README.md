@@ -65,6 +65,11 @@ supaforge clone --env=prod --apply                          # local copy, data i
 
 Everything that writes previews first. Add `--apply` to make it happen.
 
+Also on Homebrew (`brew install akalsoftware/tap/supaforge`), as a
+[GitHub Action](https://github.com/akalsoftware/supaforge-action), and as an
+MCP server for Cursor, VS Code and Claude, with one-click installs — see
+[Install](packages/cli/README.md#install).
+
 **[Full documentation →](packages/cli/README.md)**: the checks, commands,
 safety model, snapshots and restore, migrations, configuration, self-hosted
 Supabase, CI and MCP.
