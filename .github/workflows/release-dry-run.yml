@@ -75,6 +75,20 @@ jobs:
         working-directory: packages/cli
         run: npm publish --dry-run --tag next
 
+      # What release.yml sends the MCP Registry, checked by the registry itself.
+      - name: Validate server.json
+        working-directory: packages/cli
+        run: |
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/download/v1.8.1/mcp-publisher_linux_amd64.tar.gz" | tar xz mcp-publisher
+          jq --arg n "$(node -p "require('./package.json').mcpName")" -e '.name == $n' server.json >/dev/null \
+            || { echo "::error::server.json name does not match package.json mcpName"; exit 1; }
+          ./mcp-publisher validate
+
+      # The Claude Desktop extension build, on the version already on npm.
+      - name: Build a Claude Desktop extension
+        working-directory: packages/cli
+        run: scripts/build-mcpb.sh "$(npm view @akal/supaforge version)" linux-x64 "$RUNNER_TEMP/mcpb"
+
       # The package as a user gets it: packed, installed elsewhere, run. A
       # warning here reaches every user — oclif warned on every command, under
       # NODE_ENV=development or test, that it could not find TypeScript.

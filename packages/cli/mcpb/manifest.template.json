@@ -1,0 +1,41 @@
+{
+  "manifest_version": "0.3",
+  "name": "supaforge",
+  "display_name": "SupaForge",
+  "version": "__VERSION__",
+  "description": "Find and fix drift between Supabase environments.",
+  "long_description": "SupaForge compares two Supabase projects — schema, RLS policies, roles and grants, auth, storage, webhooks, cron, vault, migrations and reference data — and gives the SQL to bring them back in line. It reads supaforge.config.json in the project directory you choose; scanning writes nothing, and applying a fix asks first.",
+  "author": { "name": "Akal Software Ltd", "url": "https://github.com/akalsoftware" },
+  "homepage": "https://supaforge.dev",
+  "repository": { "type": "git", "url": "https://github.com/akalsoftware/supaforge" },
+  "license": "MIT",
+  "keywords": ["supabase", "postgres", "drift", "migrations", "rls", "database"],
+  "server": {
+    "type": "node",
+    "entry_point": "server/node_modules/@akal/supaforge/bin/run.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/node_modules/@akal/supaforge/bin/run.js", "mcp", "--project", "${user_config.project_dir}"],
+      "env": { "NO_COLOR": "1" }
+    }
+  },
+  "user_config": {
+    "project_dir": {
+      "type": "directory",
+      "title": "Project directory",
+      "description": "The directory holding supaforge.config.json (run `npx @akal/supaforge init` there to create one).",
+      "required": true
+    }
+  },
+  "tools": [
+    { "name": "scan_drift", "description": "Compare two environments and report drift, with the SQL to fix it" },
+    { "name": "apply_fixes", "description": "Apply fixes from a scan to the target environment" },
+    { "name": "take_snapshot", "description": "Snapshot an environment to local files" },
+    { "name": "create_migration", "description": "Write a migration file for the drift found" },
+    { "name": "get_check_result", "description": "Read one check's result from the last scan" }
+  ],
+  "compatibility": {
+    "platforms": ["__OS__"],
+    "runtimes": { "node": ">=20.0.0" }
+  }
+}

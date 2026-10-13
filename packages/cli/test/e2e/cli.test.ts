@@ -488,6 +488,15 @@ describe('CLI e2e: mcp', () => {
     expect(stdout).toContain('stdio')
     expect(stdout).toContain('Claude Desktop')
   })
+
+  it('refuses a --project that is not a directory', async () => {
+    try {
+      await run(['mcp', '--project', '/nonexistent/supaforge-project'])
+      expect.unreachable('should have exited non-zero')
+    } catch (err: any) {
+      expect(err.stderr ?? err.message).toContain('is not a directory')
+    }
+  })
 })
 
 

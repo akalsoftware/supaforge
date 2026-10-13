@@ -1,3 +1,5 @@
+import { existsSync, statSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { Command, Flags } from '@oclif/core'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { createServer } from '../mcp/server.js'
@@ -9,10 +11,17 @@ export default class Mcp extends Command {
   static override examples = [
     '<%= config.bin %> mcp',
     '<%= config.bin %> mcp --allow-config-path',
+    '<%= config.bin %> mcp --project ~/code/my-app',
     '# Claude Desktop / Cursor config:\n# { "mcpServers": { "supaforge": { "command": "supaforge", "args": ["mcp"] } } }',
   ]
 
   static override flags = {
+    project: Flags.string({
+      description:
+        'The project directory, holding supaforge.config.json. Defaults to the '
+        + 'directory the server starts in — which an AI client may not let you '
+        + 'choose, so name it here.',
+    }),
     'allow-config-path': Flags.boolean({
       description:
         'Let a client choose which supaforge.config.json to load. Off by default: '
@@ -25,7 +34,11 @@ export default class Mcp extends Command {
 
   async run(): Promise<void> {
     const { flags } = await this.parse(Mcp)
-    const server = createServer(process.cwd(), {
+    const project = resolve(flags.project ?? process.cwd())
+    if (!existsSync(project) || !statSync(project).isDirectory()) {
+      this.error(`--project: ${project} is not a directory`)
+    }
+    const server = createServer(project, {
       allowConfigPath: flags['allow-config-path'],
     })
     const transport = new StdioServerTransport()
