@@ -15,6 +15,11 @@ on:
     secrets:
       NPM_TOKEN:
         required: true
+      # The editor marketplaces; a missing one skips that marketplace.
+      VSCE_PAT:
+        required: false
+      OVSX_PAT:
+        required: false
 
 jobs:
   build-and-test:
@@ -252,3 +257,25 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release upload "${{ inputs.tag_name }}" dist-mcpb/*.mcpb --clobber --repo "${{ github.repository }}"
+
+  # ghcr.io/akalsoftware/supaforge, built from the version just published.
+  docker:
+    name: Docker image
+    needs: [publish-npm]
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/docker.yml
+    with:
+      version: ${{ inputs.tag_name }}
+
+  # The VS Code / Open VSX extension, at this version.
+  vscode:
+    name: VS Code extension
+    needs: [publish-npm, create-release]
+    permissions:
+      contents: write
+    uses: ./.github/workflows/vscode.yml
+    with:
+      version: ${{ inputs.tag_name }}
+    secrets: inherit

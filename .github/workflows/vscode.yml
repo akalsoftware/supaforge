@@ -1,0 +1,92 @@
+name: VS Code extension
+
+# The SupaForge extension, at a release's version: packaged, tested in VS
+# Code, attached to the GitHub Release, and published to the VS Code
+# Marketplace (VSCE_PAT) and Open VSX (OVSX_PAT) — Open VSX is where Cursor,
+# Windsurf and VSCodium install from. A missing token skips that registry.
+# Called by release.yml, or run by hand for a published version.
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+    secrets:
+      VSCE_PAT:
+        required: false
+      OVSX_PAT:
+        required: false
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Published @akal/supaforge version (0.0.33 or v0.0.33)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  extension:
+    name: Package and publish (${{ inputs.version }})
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/vscode
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+
+      - name: Version
+        run: |
+          echo "VERSION=${VERSION#v}" >> "$GITHUB_ENV"
+          echo "TAG=v${VERSION#v}" >> "$GITHUB_ENV"
+
+      - run: npm ci
+
+      - name: Set the extension's version
+        run: npm version "$VERSION" --no-git-tag-version --allow-same-version
+
+      # The extension runs this CLI version, so it must be on npm first.
+      - name: Wait for npm to serve the CLI
+        run: |
+          for _ in $(seq 1 30); do
+            npm view "@akal/supaforge@$VERSION" version >/dev/null 2>&1 && exit 0
+            sleep 10
+          done
+          echo "::error::@akal/supaforge@$VERSION is not on npm"; exit 1
+
+      - name: Test in VS Code
+        run: xvfb-run -a npm test
+
+      - name: Package
+        run: npx vsce package --no-dependencies -o "supaforge-$VERSION.vsix"
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release upload "$TAG" "supaforge-$VERSION.vsix" --clobber --repo "${{ github.repository }}"
+          else
+            echo "::notice::No release $TAG to attach the .vsix to"
+          fi
+
+      - name: Publish to the VS Code Marketplace
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          if [ -z "$VSCE_PAT" ]; then echo "::notice::VSCE_PAT is not set; skipping the VS Code Marketplace"; exit 0; fi
+          npx vsce publish --no-dependencies --packagePath "supaforge-$VERSION.vsix" --skip-duplicate
+
+      - name: Publish to Open VSX
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: |
+          if [ -z "$OVSX_PAT" ]; then echo "::notice::OVSX_PAT is not set; skipping Open VSX"; exit 0; fi
+          npx ovsx create-namespace akalsoftware -p "$OVSX_PAT" 2>/dev/null || true
+          npx ovsx publish "supaforge-$VERSION.vsix" -p "$OVSX_PAT" --skip-duplicate

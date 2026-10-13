@@ -1,0 +1,8 @@
+{
+  "environments": {
+    "staging": { "dbUrl": "$STAGING_DATABASE_URL" },
+    "production": { "dbUrl": "$PRODUCTION_DATABASE_URL" }
+  },
+  "source": "staging",
+  "target": "production"
+}

@@ -1,0 +1,106 @@
+name: Docker image
+
+# ghcr.io/akalsoftware/supaforge, for amd64 and arm64: a published SupaForge
+# version with the PostgreSQL 18 client tools. Called by release.yml for each
+# release, or run by hand for any published version.
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Published @akal/supaforge version (0.0.33 or v0.0.33)'
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    name: ghcr.io/akalsoftware/supaforge (${{ inputs.version }})
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: pw
+        ports: ['5432:5432']
+        options: --health-cmd pg_isready --health-interval 5s --health-retries 20
+    env:
+      VERSION: ${{ inputs.version }}
+      IMAGE: ghcr.io/akalsoftware/supaforge
+    steps:
+      - uses: actions/checkout@v4
+
+      # release.yml passes the tag, v0.0.33; npm and the image use 0.0.33.
+      - name: Version
+        run: echo "VERSION=${VERSION#v}" >> "$GITHUB_ENV"
+
+      # Built from npm, which can lag a publish by a moment.
+      - name: Wait for npm to serve the version
+        run: |
+          for _ in $(seq 1 30); do
+            npm view "@akal/supaforge@$VERSION" version >/dev/null 2>&1 && exit 0
+            sleep 10
+          done
+          echo "::error::@akal/supaforge@$VERSION is not on npm"; exit 1
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build for testing
+        uses: docker/build-push-action@v6
+        with:
+          context: packages/cli/docker
+          build-args: SUPAFORGE_VERSION=${{ env.VERSION }}
+          platforms: linux/amd64
+          load: true
+          tags: supaforge:test
+          cache-to: type=gha,mode=max
+          cache-from: type=gha
+
+      # The image as a user runs it: a project mounted at /work, drift found,
+      # and the version and both tools it promises.
+      - name: Test
+        run: |
+          set -euo pipefail
+          docker run --rm supaforge:test --version | grep -F "supaforge/$VERSION"
+          docker run --rm --entrypoint dbdiff supaforge:test --version
+          docker run --rm --entrypoint pg_dump supaforge:test --version
+          psql_() { docker run --rm --network host -e PGPASSWORD=pw --entrypoint psql supaforge:test -h localhost -U postgres "$@"; }
+          psql_ -c 'CREATE DATABASE src' -c 'CREATE DATABASE tgt'
+          psql_ -d src -c 'CREATE TABLE plans (id int PRIMARY KEY, name text)'
+          mkdir -p work && chmod 777 work
+          echo '{"environments":{"src":{"dbUrl":"postgres://postgres:pw@localhost:5432/src"},"tgt":{"dbUrl":"postgres://postgres:pw@localhost:5432/tgt"}},"source":"src","target":"tgt"}' > work/supaforge.config.json
+          docker run --rm --network host -v "$PWD/work:/work" supaforge:test diff --check schema --json > report.json || true
+          jq -e '.checks[] | select(.check == "schema") | .issues | map(.title) | index("Table missing: public.plans")' report.json
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tags
+        id: tags
+        run: |
+          tags="$IMAGE:$VERSION"
+          # `latest` follows stable releases only.
+          [[ "$VERSION" == *-* ]] || tags="$tags,$IMAGE:latest"
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: packages/cli/docker
+          build-args: SUPAFORGE_VERSION=${{ env.VERSION }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha
+          labels: |
+            org.opencontainers.image.source=https://github.com/akalsoftware/supaforge

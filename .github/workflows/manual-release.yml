@@ -35,6 +35,9 @@ on:
 permissions:
   contents: write
   id-token: write
+  # release.yml's Docker job pushes to ghcr.io; a called workflow gets no
+  # more than its caller grants.
+  packages: write
 
 # Serialize releases: never run two at once (a double-click or overlapping
 # dispatch would otherwise race to bump/tag/publish). Queue rather than cancel —
