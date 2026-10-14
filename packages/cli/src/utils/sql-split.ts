@@ -6,6 +6,25 @@
  * — a pg_dump, a migration file — rather than being generated here.
  */
 
+/** The start of a statement that can hold a `BEGIN ATOMIC` body. */
+const ROUTINE_HEAD = /^CREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE)\b/i
+
+/** A statement's text without the comments and blank lines before it. */
+function withoutLeadingComments(text: string): string {
+  let rest = text.trimStart()
+  for (;;) {
+    if (rest.startsWith('--')) {
+      const newline = rest.indexOf('\n')
+      rest = newline === -1 ? '' : rest.slice(newline + 1).trimStart()
+    } else if (rest.startsWith('/*')) {
+      const close = rest.indexOf('*/')
+      rest = close === -1 ? '' : rest.slice(close + 2).trimStart()
+    } else {
+      return rest
+    }
+  }
+}
+
 /** `$$` or `$tag$`, anchored at the current position. */
 const DOLLAR_TAG = /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/
 
@@ -25,6 +44,12 @@ const DOLLAR_TAG = /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/
  *   - `"quoted identifiers"`, same doubling rule
  *   - `$tag$ dollar quoted $tag$`, which is how routine bodies arrive
  *   - line comments, and block comments, which nest in PostgreSQL
+ *   - a SQL-standard routine body, `BEGIN ATOMIC ... ; ... END`, whose
+ *     statements end in semicolons of their own. As psql does, inside a
+ *     CREATE FUNCTION or PROCEDURE each BEGIN or CASE opens a level and each
+ *     END closes one, and a `;` ends the statement only at level zero. Split
+ *     at the first `;`, restoring such a function failed with "syntax error
+ *     at end of input".
  *
  * Statements come back trimmed with the trailing `;` removed, and empty
  * fragments dropped. Comments are left in place: they are part of the
@@ -35,6 +60,7 @@ export function splitSqlStatements(sql: string): string[] {
   let start = 0
   let i = 0
   let blockDepth = 0
+  let beginDepth = 0
 
   const push = (end: number) => {
     const piece = sql.slice(start, end).trim()
@@ -82,7 +108,19 @@ export function splitSqlStatements(sql: string): string[] {
       continue
     }
 
-    if (ch === ';') {
+    if (/[A-Za-z_]/.test(ch)) {
+      const word = /^[A-Za-z_][A-Za-z0-9_]*/.exec(sql.slice(i, i + 64))![0]
+      const upper = word.toUpperCase()
+      if ((upper === 'BEGIN' || upper === 'CASE') && ROUTINE_HEAD.test(withoutLeadingComments(sql.slice(start, i)))) {
+        beginDepth++
+      } else if (upper === 'END' && beginDepth > 0) {
+        beginDepth--
+      }
+      i += word.length
+      continue
+    }
+
+    if (ch === ';' && beginDepth === 0) {
       push(i)
       i++
       start = i
