@@ -3,6 +3,7 @@ import { resolve } from 'node:path'
 import { Command, Flags } from '@oclif/core'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { createServer } from '../mcp/server.js'
+import { installProcessGuard, keepRunningOnStrayErrors } from '../process-guard.js'
 
 export default class Mcp extends Command {
   static override description =
@@ -33,6 +34,8 @@ export default class Mcp extends Command {
   }
 
   async run(): Promise<void> {
+    keepRunningOnStrayErrors()
+    installProcessGuard(this.argv)
     const { flags } = await this.parse(Mcp)
     const project = resolve(flags.project ?? process.cwd())
     if (!existsSync(project) || !statSync(project).isDirectory()) {

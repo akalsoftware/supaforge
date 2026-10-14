@@ -8,8 +8,7 @@
 import { execFile } from 'node:child_process'
 import { platform } from 'node:os'
 import { existsSync } from 'node:fs'
-import pg from 'pg'
-import { pgClientConfig } from './db.js'
+import { newPgClient } from './db.js'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -121,6 +120,21 @@ export async function resolvePgDumpPath(
 }
 
 /**
+ * Refuse a SUPAFORGE_PG_BIN that names no pg_dump, before anything is
+ * captured. Mistyped, it used to be noticed only as a snapshot without a
+ * restorable schema, reported as a success.
+ */
+export function assertPgBinUsable(): void {
+  const named = process.env.SUPAFORGE_PG_BIN?.trim()
+  if (named && !existsSync(`${named}/pg_dump`)) {
+    throw new Error(
+      `SUPAFORGE_PG_BIN is set to "${named}", which has no pg_dump. `
+      + 'Point it at a directory of PostgreSQL client tools, or unset it to use the ones on PATH.',
+    )
+  }
+}
+
+/**
  * Why no pg_dump would do, for a message that says what to change: the
  * version needed, what PATH and SUPAFORGE_PG_BIN offered, and the variable.
  */
@@ -157,7 +171,7 @@ function versionsToCheck(required: number): number[] {
 
 /** Get remote PostgreSQL server major version via SQL. */
 export async function getServerMajorVersion(dbUrl: string): Promise<number> {
-  const client = new pg.Client(pgClientConfig(dbUrl))
+  const client = newPgClient(dbUrl)
   try {
     await client.connect()
     const { rows } = await client.query('SHOW server_version')

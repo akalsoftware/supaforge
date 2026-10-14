@@ -1,8 +1,7 @@
 import { spawn } from 'node:child_process'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { resolve, dirname } from 'node:path'
-import pg from 'pg'
-import { pgClientConfig, pgQuery, type QueryFn } from './db.js'
+import { pgQuery, type QueryFn, newPgClient } from './db.js'
 import { captureSnapshot, type SnapshotResult } from './snapshot'
 import type { EnvironmentConfig, SupaForgeConfig } from './types/config'
 import { checkPgDumpCompat } from './pg-tools'
@@ -185,7 +184,7 @@ export async function createBranch(opts: CreateBranchOptions): Promise<BranchMet
 async function tryTemplateCopy(sourceUrl: string, newDb: string): Promise<boolean> {
   const { database } = parseUrl(sourceUrl)
   const maintenanceUrl = replaceDbName(sourceUrl, 'postgres')
-  const client = new pg.Client(pgClientConfig(maintenanceUrl))
+  const client = newPgClient(maintenanceUrl)
   try {
     await client.connect()
     await client.query(`CREATE DATABASE ${quoteName(newDb)} TEMPLATE ${quoteName(database)}`)
@@ -208,7 +207,7 @@ async function tryDumpRestore(
   const maintenanceUrl = replaceDbName(sourceUrl, 'postgres')
 
   // Create the empty target database
-  const client = new pg.Client(pgClientConfig(maintenanceUrl))
+  const client = newPgClient(maintenanceUrl)
   try {
     await client.connect()
     await client.query(`CREATE DATABASE ${quoteName(newDb)}`)
@@ -265,7 +264,7 @@ async function tryDumpRestore(
     return true
   } catch {
     // Clean up on hard failure
-    const cleanup = new pg.Client(pgClientConfig(maintenanceUrl))
+    const cleanup = newPgClient(maintenanceUrl)
     try {
       await cleanup.connect()
       await cleanup.query(`DROP DATABASE IF EXISTS ${quoteName(newDb)}`)
@@ -293,7 +292,7 @@ export interface ReconciledClone extends BranchMeta {
 /** List database names present on a server (connects to the maintenance `postgres` db). */
 async function listServerDatabases(serverUrl: string): Promise<Set<string>> {
   const maintenanceUrl = replaceDbName(serverUrl, 'postgres')
-  const client = new pg.Client(pgClientConfig(maintenanceUrl))
+  const client = newPgClient(maintenanceUrl)
   try {
     await client.connect()
     const { rows } = await client.query(
@@ -402,7 +401,7 @@ export async function deleteBranch(
 
   // Terminate connections and drop
   const maintenanceUrl = replaceDbName(sourceUrl, 'postgres')
-  const client = new pg.Client(pgClientConfig(maintenanceUrl))
+  const client = newPgClient(maintenanceUrl)
   try {
     await client.connect()
     await client.query(
@@ -464,7 +463,7 @@ export async function cloneRemoteToLocal(opts: CloneRemoteOptions): Promise<Clon
   const localDbUrl = replaceDbName(opts.localBaseUrl, opts.localDbName)
 
   // Create the empty target database on the local server
-  const client = new pg.Client(pgClientConfig(localMaintenanceUrl))
+  const client = newPgClient(localMaintenanceUrl)
   try {
     await client.connect()
 
@@ -496,7 +495,7 @@ export async function cloneRemoteToLocal(opts: CloneRemoteOptions): Promise<Clon
   // auth.users and RLS policies referencing auth.uid() — causing false
   // drift on the very first `supaforge diff` after clone.
   if (opts.excludeSchemas?.length) {
-    const stubClient = new pg.Client(pgClientConfig(localDbUrl))
+    const stubClient = newPgClient(localDbUrl)
     try {
       await stubClient.connect()
       await stubClient.query(CLONE_STUBS_SQL)
@@ -616,7 +615,7 @@ export async function cloneRemoteToLocal(opts: CloneRemoteOptions): Promise<Clon
     })
   } catch (err) {
     // Clean up the empty database on failure
-    const cleanup = new pg.Client(pgClientConfig(localMaintenanceUrl))
+    const cleanup = newPgClient(localMaintenanceUrl)
     try {
       await cleanup.connect()
       await cleanup.query(`DROP DATABASE IF EXISTS ${quoteName(opts.localDbName)}`)
@@ -760,7 +759,7 @@ async function installRemoteExtensions(
   const installed: string[] = []
   if (excludeSchemas.length === 0) return { installed }
 
-  const remote = new pg.Client(pgClientConfig(remoteUrl))
+  const remote = newPgClient(remoteUrl)
   let wanted: Array<{ extname: string; schema: string }> = []
   try {
     await remote.connect()
@@ -779,7 +778,7 @@ async function installRemoteExtensions(
     await remote.end()
   }
 
-  const local = new pg.Client(pgClientConfig(localDbUrl))
+  const local = newPgClient(localDbUrl)
   try {
     await local.connect()
     const { rows } = await local.query<{ name: string }>('SELECT name FROM pg_available_extensions')

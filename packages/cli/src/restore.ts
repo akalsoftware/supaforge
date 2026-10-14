@@ -2,7 +2,7 @@ import { readFile, access } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { join } from 'node:path'
 import pg from 'pg'
-import { pgClientConfig } from './db.js'
+import { newPgClient } from './db.js'
 import type { MigrationFile, SnapshotManifest } from './types/config'
 import { loadMigrations } from './migration'
 import { MIGRATIONS_TABLE } from './constants.js'
@@ -93,7 +93,7 @@ export interface RestoreResult {
  */
 export async function getPublicTables(targetUrl: string): Promise<string[]> {
   const ignoreList = DEFAULT_IGNORE_SCHEMAS.map(s => `'${s}'`).join(', ')
-  const client = new pg.Client(pgClientConfig(targetUrl))
+  const client = newPgClient(targetUrl)
   await client.connect()
   try {
     const { rows } = await client.query<{ tablename: string }>(
@@ -123,7 +123,7 @@ export async function restoreFromSnapshot(options: RestoreOptions): Promise<Rest
 
   // Apply SQL layers in dependency order
   const sqlOrder = RESTORE_SQL_ORDER
-  const client = new pg.Client(pgClientConfig(options.targetUrl))
+  const client = newPgClient(options.targetUrl)
   await client.connect()
 
   // One transaction for the lot, unless asked otherwise. A restore that fails
@@ -425,7 +425,7 @@ export async function restoreFromMigrations(options: RestoreOptions): Promise<Re
   }
 
   // Ensure tracking table exists
-  const client = new pg.Client(pgClientConfig(options.targetUrl))
+  const client = newPgClient(options.targetUrl)
   await client.connect()
 
   try {

@@ -374,9 +374,9 @@ describe('AuthCheck against self-hosted Supabase (issue #41)', () => {
   })
 
   it('names the gateway in the error when the gateway rejects', async () => {
-    const fetchFn: FetchFn = async () => ({ ok: false, statusText: 'Unauthorized' } as Response)
+    const fetchFn: FetchFn = async () => ({ ok: false, status: 401, statusText: 'Unauthorized' } as Response)
     await expect(new AuthCheck(fetchFn).scan(selfHostedContext()))
-      .rejects.toThrow('Failed to fetch auth settings from https://a.example.com: Unauthorized')
+      .rejects.toThrow('Failed to fetch auth settings from https://a.example.com: HTTP 401 Unauthorized')
   })
 
   it('skips rather than comparing a self-hosted source against a hosted target', async () => {

@@ -3,6 +3,7 @@ import { Check, CheckSkipped, type CheckContext } from './base'
 import { SUPABASE_MGMT_API } from '../constants'
 import { inventoryFunctions, type FunctionInventory } from '../edge-functions-fs'
 import { inventoryFunctionsViaStudio, DEFAULT_SELF_HOSTED_REF } from '../edge-functions-api'
+import { httpStatus, readJsonArray } from '../utils/http.js'
 
 interface EdgeFunction {
   slug: string
@@ -96,8 +97,8 @@ export class EdgeFunctionsCheck extends Check {
     const res = await this.fetchFn(url, {
       headers: { Authorization: `Bearer ${accessToken}` },
     })
-    if (!res.ok) throw new Error(`Failed to list functions for ${projectRef}: ${res.statusText}`)
-    return res.json() as Promise<EdgeFunction[]>
+    if (!res.ok) throw new Error(`Failed to list functions for ${projectRef}: HTTP ${httpStatus(res)}`)
+    return readJsonArray<EdgeFunction>(res, `The Edge Function list of ${projectRef}`)
   }
 }
 

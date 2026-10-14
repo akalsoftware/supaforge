@@ -40,6 +40,33 @@ export function pgClientConfig(dbUrl: string, queryTimeoutMs?: number): pg.Clien
 }
 
 /**
+ * A `pg.Client` whose stray errors cannot take the process down.
+ *
+ * `pg` reports an error through the query that hit it, but one that arrives
+ * when no query is running — the server cancelling a statement the client had
+ * already given up on, or closing an idle connection — is emitted as an
+ * `'error'` event, and an unhandled one ends the process with a stack trace.
+ * Under --json that meant no JSON at all. The next query on the client fails
+ * and reports it, so swallowing the event loses nothing.
+ */
+export function newPgClient(dbUrl: string, queryTimeoutMs?: number): pg.Client {
+  const client = new pg.Client(pgClientConfig(dbUrl, queryTimeoutMs))
+  client.on('error', () => undefined)
+  return client
+}
+
+/**
+ * The same for a pool: its own `'error'` event (an idle client dropped), and
+ * every client's while it is checked out, when the pool's listener is off.
+ */
+export function newPgPool(config: pg.PoolConfig): pg.Pool {
+  const pool = new pg.Pool(config)
+  pool.on('error', () => undefined)
+  pool.on('connect', client => { client.on('error', () => undefined) })
+  return pool
+}
+
+/**
  * One pool per database, shared by every query in a run.
  *
  * `pgQuery` used to open and close a `pg.Client` per query, and each connection
@@ -66,15 +93,11 @@ function poolFor(dbUrl: string): pg.Pool {
   const existing = pools.get(dbUrl)
   if (existing) return existing
 
-  const pool = new pg.Pool({
+  const pool = newPgPool({
     ...pgClientConfig(dbUrl),
     max: POOL_MAX,
     allowExitOnIdle: true,
   })
-  // A pool emits 'error' for an idle client dropped by the server, and an
-  // unhandled 'error' event would take the process down. Queries still reject
-  // through their own promise, so this only has to stop the crash.
-  pool.on('error', () => undefined)
 
   pools.set(dbUrl, pool)
   return pool
