@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { resolveConfig, validateConfig, expandEnvVars, parseProjectRef } from '../src/config.js'
+import { loadConfig, resolveConfig, validateConfig, expandEnvVars, parseProjectRef } from '../src/config.js'
 import { loadEnvFiles } from '../src/env-loader.js'
 import { DEFAULT_IGNORE_SCHEMAS } from '../src/defaults.js'
 import type { SupaForgeConfig } from '../src/types/config.js'
@@ -268,5 +268,27 @@ describe('loadEnvFiles', () => {
     await writeFile(join(tempDir, '.env.production'), 'LOAD_ENV_TEST_A=prod\n')
     await loadEnvFiles(tempDir)
     expect(process.env.LOAD_ENV_TEST_A).toBe('prod')
+  })
+})
+
+describe('loadConfig: a config it cannot use says why', () => {
+  let dir: string
+  beforeEach(async () => { dir = await mkdtemp(join(tmpdir(), 'supaforge-cfg-')) })
+  afterEach(async () => { await rm(dir, { recursive: true, force: true }) })
+
+  it('names a syntax error', async () => {
+    await writeFile(join(dir, 'supaforge.config.json'), '{ "environments": { , }')
+    await expect(loadConfig(dir)).rejects.toThrow(/supaforge\.config\.json is not valid JSON/)
+  })
+
+  it('refuses something other than an object', async () => {
+    await writeFile(join(dir, 'supaforge.config.json'), '[]')
+    await expect(loadConfig(dir)).rejects.toThrow(/must hold a JSON object/)
+  })
+
+  it('leaves missing environments to validation rather than crashing', async () => {
+    await writeFile(join(dir, 'supaforge.config.json'), '{}')
+    const config = await loadConfig(dir)
+    expect(validateConfig(config).length).toBeGreaterThan(0)
   })
 })

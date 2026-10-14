@@ -218,3 +218,33 @@ describe('isPsqlMetaCommand: never discards SQL with it', () => {
     expect(isPsqlMetaCommand('-- header\n\\unrestrict abc')).toBe(true)
   })
 })
+
+describe('splitSqlStatements: SQL-standard routine bodies', () => {
+  it('keeps a BEGIN ATOMIC body whole', () => {
+    const fn = 'CREATE FUNCTION public.inc(a integer) RETURNS integer\n    LANGUAGE sql IMMUTABLE\n    BEGIN ATOMIC\n SELECT (a + 1);\nEND'
+    expect(splitSqlStatements(`${fn};\nCREATE TABLE t (id int);`)).toEqual([fn, 'CREATE TABLE t (id int)'])
+  })
+
+  it('counts a CASE inside the body, which ends in END too', () => {
+    const fn = `CREATE OR REPLACE PROCEDURE p(x int) LANGUAGE sql BEGIN ATOMIC
+      INSERT INTO t VALUES (CASE WHEN x > 0 THEN x ELSE 0 END);
+      INSERT INTO t VALUES (CASE x WHEN 1 THEN 1 END);
+    END`
+    expect(splitSqlStatements(`${fn}; SELECT 1;`)).toEqual([fn, 'SELECT 1'])
+  })
+
+  it('finds the routine behind pg_dump\'s comment header', () => {
+    const fn = '--\n-- Name: inc(integer); Type: FUNCTION\n--\n\nCREATE FUNCTION inc(a integer) RETURNS integer LANGUAGE sql BEGIN ATOMIC SELECT a + 1; END'
+    expect(splitSqlStatements(`${fn};SELECT 2;`)).toEqual([fn, 'SELECT 2'])
+  })
+
+  it('leaves BEGIN and END outside a routine alone', () => {
+    expect(splitSqlStatements('BEGIN; SELECT CASE WHEN true THEN 1 END; END;'))
+      .toEqual(['BEGIN', 'SELECT CASE WHEN true THEN 1 END', 'END'])
+  })
+
+  it('does not count BEGIN in a dollar-quoted body', () => {
+    const fn = 'CREATE FUNCTION f() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$'
+    expect(splitSqlStatements(`${fn}; SELECT 3;`)).toEqual([fn, 'SELECT 3'])
+  })
+})

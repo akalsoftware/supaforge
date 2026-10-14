@@ -3,6 +3,7 @@ import { resolve } from 'node:path'
 import type { SupaForgeConfig, EnvironmentConfig } from './types/config'
 import { DEFAULT_IGNORE_SCHEMAS } from './defaults'
 import { loadEnvFiles } from './env-loader'
+import { errMsg } from './utils/error.js'
 
 const CONFIG_FILENAME = 'supaforge.config.json'
 
@@ -64,14 +65,23 @@ export async function loadConfig(cwd = process.cwd()): Promise<SupaForgeConfig> 
   await loadEnvFiles(cwd)
   const configPath = resolve(cwd, CONFIG_FILENAME)
   const raw = await readFile(configPath, 'utf-8')
-  const config = JSON.parse(raw) as SupaForgeConfig
-  return resolveConfig(config)
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch (err) {
+    throw new Error(`${CONFIG_FILENAME} is not valid JSON: ${errMsg(err)}`)
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`${CONFIG_FILENAME} must hold a JSON object, with an "environments" object inside`)
+  }
+  return resolveConfig(parsed as SupaForgeConfig)
 }
 
 export function resolveConfig(config: SupaForgeConfig): SupaForgeConfig {
   return {
     ...config,
-    environments: expandEnvironments(config.environments),
+    // Missing, it is validateConfig's to report, not a crash here.
+    environments: expandEnvironments(config.environments ?? {}),
     ignoreSchemas: config.ignoreSchemas ?? DEFAULT_IGNORE_SCHEMAS,
   }
 }

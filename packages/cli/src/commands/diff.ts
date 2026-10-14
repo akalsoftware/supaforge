@@ -59,6 +59,24 @@ const APPLY_ONLY_FLAGS: ReadonlyArray<{ flag: string; shapesThePlan: boolean }> 
   { flag: 'allow-destructive', shapesThePlan: true },
 ]
 
+/**
+ * What to do after a rolled-back apply.
+ *
+ * Usually: apply the fixes that work without the one that failed. Not when
+ * the failure is replacing a view or type something else depends on — the
+ * others may be what depends on it, and applying them alone leaves the two
+ * out of step — so that one is named to fix or leave out instead.
+ */
+export function rollbackHint(errors: ReadonlyArray<{ issueId: string; error: string }>): string {
+  const replacing = errors.filter(e =>
+    /-alter-(?:view|type)-\d+$/.test(e.issueId) || /depend(?:s)? on it|\b2BP01\b/i.test(e.error))
+  if (replacing.length > 0) {
+    return `Nothing was written. ${replacing.map(e => e.issueId).join(', ')} replaces an object others depend on, `
+      + `so the other fixes were not applied without it: fix the cause above, or leave it out with ${cmd('--only')}.`
+  }
+  return `Nothing was written. Re-run with ${cmd('--no-transaction')} to apply the fixes that do work.`
+}
+
 /** Which apply-only flags this invocation will silently ignore. */
 export function inertApplyFlags(
   flags: Record<string, unknown>,
@@ -246,7 +264,7 @@ export default class Diff extends BaseCommand {
         this.log(`  ${warn('✗')} ${dim(`[${item.check}]`)} ${item.issueId}: ${item.error}`)
       }
       if (result.rolledBack) {
-        this.log(`\n  ${dim(`Nothing was written. Re-run with ${cmd('--no-transaction')} to apply the fixes that do work.`)}`)
+        this.log(`\n  ${dim(rollbackHint(result.errors))}`)
       }
     }
 

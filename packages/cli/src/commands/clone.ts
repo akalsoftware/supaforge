@@ -1,8 +1,7 @@
 import { writeFile, mkdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { Flags } from '@oclif/core'
-import pg from 'pg'
-import { pgClientConfig } from '../db.js'
+import { newPgClient } from '../db.js'
 import { BaseCommand } from '../base-command.js'
 import { captureSnapshot, formatSnapshotLayers } from '../snapshot.js'
 import {
@@ -222,7 +221,7 @@ export default class Clone extends BaseCommand {
 
     pre.addCheck('Target database', async () => {
       try {
-        const client = new pg.Client(pgClientConfig(localBaseUrl))
+        const client = newPgClient(localBaseUrl)
         await client.connect()
         const { rows } = await client.query(
           'SELECT 1 FROM pg_database WHERE datname = $1',

@@ -1595,3 +1595,21 @@ describe('dbdiffNotInstalled', () => {
     expect(dbdiffNotInstalled(127, 'sh: 1: dbdiff: not found')).toBe(true)
   })
 })
+
+describe('sqlToIssues: statements that hold a semicolon and a newline', () => {
+  it('keeps a string value whole', () => {
+    const issues = sqlToIssues({
+      up: "INSERT INTO \"notes\" (\"id\", \"body\") VALUES (1, 'first;\nsecond');\nINSERT INTO \"notes\" (\"id\", \"body\") VALUES (2, 'x');\n",
+      down: '',
+    }, 'data')
+    expect(issues).toHaveLength(2)
+    expect(issues[0].sql!.up).toContain("'first;\nsecond'")
+  })
+
+  it('keeps a BEGIN ATOMIC function whole', () => {
+    const fn = 'CREATE OR REPLACE FUNCTION public.inc(a integer)\n RETURNS integer\n LANGUAGE sql\n IMMUTABLE\nBEGIN ATOMIC\n SELECT (a + 1);\nEND;'
+    const issues = sqlToIssues({ up: `${fn}\n`, down: '' }, 'schema')
+    expect(issues.map(i => i.title)).toEqual(['Function missing: public.inc(a integer)'])
+    expect(issues[0].sql!.up).toContain('SELECT (a + 1);\nEND')
+  })
+})

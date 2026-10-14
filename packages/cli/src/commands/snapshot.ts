@@ -1,6 +1,6 @@
 import { Flags } from '@oclif/core'
 import { BaseCommand } from '../base-command.js'
-import { captureSnapshot, listSnapshots, pruneSnapshots, formatSnapshotLayers, DEFAULT_KEEP_COUNT } from '../snapshot.js'
+import { captureSnapshot, listSnapshots, pruneSnapshots, formatSnapshotLayers, unrestorableSchema, DEFAULT_KEEP_COUNT } from '../snapshot.js'
 import { backup, listMigrationFiles } from '../migration.js'
 import type { SnapshotManifest } from '../types/config.js'
 import { ok, warn, dim, cmd, bold } from '../ui.js'
@@ -75,6 +75,11 @@ export default class Snapshot extends BaseCommand {
       default: false,
     }),
     json: Flags.boolean({ description: 'Output results as JSON' }),
+    'allow-schema-json-only': Flags.boolean({
+      description: 'Succeed even when no pg_dump could write schema.sql: the snapshot can still be diffed, '
+        + 'but restore cannot recreate its schema. Without this, such a snapshot is kept and the command exits 1.',
+      default: false,
+    }),
     output: Flags.string({
       char: 'o',
       description: 'Custom output directory for snapshot files (timestamp subfolder is created inside)',
@@ -200,6 +205,7 @@ export default class Snapshot extends BaseCommand {
           migration: result.migration,
           migrationFile: result.migrationFile,
         })
+        this.failIfUnrestorable(result.snapshot.manifest, result.snapshot.dir, flags['allow-schema-json-only'])
         return
       }
 
@@ -221,6 +227,7 @@ export default class Snapshot extends BaseCommand {
         this.log(`  ${dim('Migration:')} none (no changes detected)`)
       }
 
+      this.failIfUnrestorable(result.snapshot.manifest, result.snapshot.dir, flags['allow-schema-json-only'])
       this.log(`\n  ${ok('Snapshot + migration complete.')}\n`)
       this.log(renderTip({ command: 'snapshot', snapshotMigration: true }))
       return
@@ -233,11 +240,13 @@ export default class Snapshot extends BaseCommand {
 
     if (flags.json) {
       this.json(snapshot.manifest)
+      this.failIfUnrestorable(snapshot.manifest, snapshot.dir, flags['allow-schema-json-only'])
       return
     }
 
     this.logSnapshotResult(snapshot.manifest)
     this.log(`\n  ${dim('Snapshot saved to:')} ${snapshot.dir}`)
+    this.failIfUnrestorable(snapshot.manifest, snapshot.dir, flags['allow-schema-json-only'])
 
     // Show migration hint
     const existing = await listMigrationFiles()
@@ -248,6 +257,27 @@ export default class Snapshot extends BaseCommand {
     }
     this.log('')
     this.log(renderTip({ command: 'snapshot', snapshotMigration: false, snapshotList: false }))
+  }
+
+  /**
+   * A snapshot without schema.sql cannot restore its schema, and the time to
+   * find that out is not during a restore. It is kept — it can still be
+   * diffed — but the command fails unless that was asked for.
+   */
+  private failIfUnrestorable(manifest: SnapshotManifest, dir: string, allowed: boolean): void {
+    const reason = unrestorableSchema(manifest)
+    if (!reason) return
+    if (allowed) {
+      this.warn(`This snapshot cannot restore the schema: ${reason}`)
+      return
+    }
+    this.error(
+      `This snapshot cannot restore the schema: ${reason}.\n`
+      + `It was kept at ${dir}, and can still be diffed. Install PostgreSQL client tools at least as new `
+      + 'as the server (or set SUPAFORGE_PG_BIN to them) and snapshot again, or pass '
+      + '--allow-schema-json-only to accept a snapshot whose schema cannot be restored.',
+      { exit: 1 },
+    )
   }
 
   private logSnapshotResult(manifest: SnapshotManifest): void {

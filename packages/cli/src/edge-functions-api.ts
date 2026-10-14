@@ -17,6 +17,7 @@
  */
 import { createHash } from 'node:crypto'
 import type { FunctionInventory } from './edge-functions-fs'
+import { readJsonArray } from './utils/http.js'
 
 export type FetchFn = (url: string, init?: RequestInit) => Promise<Response>
 
@@ -107,7 +108,7 @@ export async function inventoryFunctionsViaStudio(
   if (!listRes.ok) {
     throw new Error(`Studio functions API returned ${listRes.status} for ${studioUrl}`)
   }
-  const listed = await listRes.json() as StudioFunction[]
+  const listed = await readJsonArray<StudioFunction>(listRes, `The Studio functions API at ${studioUrl}`)
 
   const out: FunctionInventory[] = []
   for (const fn of listed) {

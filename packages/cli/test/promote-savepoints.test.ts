@@ -17,6 +17,7 @@ vi.mock('pg', () => ({
       let pending = new Set<string>()
       let atSavepoint = new Set<string>()
       return {
+        on: vi.fn(),
         connect: vi.fn(async () => undefined),
         end: vi.fn(async () => undefined),
         query: vi.fn(async (sql: string) => {

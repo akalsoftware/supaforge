@@ -19,6 +19,7 @@ vi.mock('pg', () => ({
       clientConfigs.push(config)
       const behaviour = clientQueue.shift() ?? {}
       return {
+        on: vi.fn(),
         connect: vi.fn(async () => {
           if (behaviour.connectError) throw behaviour.connectError
         }),

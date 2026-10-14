@@ -2,6 +2,7 @@ import type { EnvironmentConfig } from '../types/config'
 import type { DriftIssue, SyncAction } from '../types/drift'
 import { Check, CheckSkipped, type CheckContext } from './base'
 import { SUPABASE_MGMT_API } from '../constants'
+import { httpStatus, readJsonObject } from '../utils/http.js'
 
 export type FetchFn = (url: string, init?: RequestInit) => Promise<Response>
 
@@ -209,8 +210,8 @@ export class AuthCheck extends Check {
     const res = await this.fetchFn(url, {
       headers: { Authorization: `Bearer ${accessToken}` },
     })
-    if (!res.ok) throw new Error(`Failed to fetch auth config for ${projectRef}: ${res.statusText}`)
-    return res.json() as Promise<Record<string, unknown>>
+    if (!res.ok) throw new Error(`Failed to fetch auth config for ${projectRef}: HTTP ${httpStatus(res)}`)
+    return readJsonObject(res, `The auth config of ${projectRef}`)
   }
 
   /**
@@ -224,8 +225,8 @@ export class AuthCheck extends Check {
     const res = await this.fetchFn(url, {
       headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}` },
     })
-    if (!res.ok) throw new Error(`Failed to fetch auth settings from ${apiUrl}: ${res.statusText}`)
-    const raw = await res.json() as Record<string, unknown>
+    if (!res.ok) throw new Error(`Failed to fetch auth settings from ${apiUrl}: HTTP ${httpStatus(res)}`)
+    const raw = await readJsonObject(res, `The auth settings at ${apiUrl}`)
     return normalizeGoTrueSettings(raw)
   }
 }

@@ -7,6 +7,7 @@ import { DEFAULT_MIGRATIONS_DIR } from './checks/migrations.js'
 import type { SupaForgeConfig, EnvironmentConfig } from './types/config.js'
 import type { PreflightReport } from './preflight.js'
 import { appendRunLog, redactArgs, type RunLogCheckSummary } from './run-log.js'
+import { installProcessGuard, noteJsonWritten } from './process-guard.js'
 
 /**
  * Shared base for all supaforge commands.
@@ -36,6 +37,7 @@ export abstract class BaseCommand extends Command {
   /** The command's result as JSON, on stdout. */
   protected json(value: unknown): void {
     this._jsonWritten = true
+    noteJsonWritten()
     process.stdout.write(JSON.stringify(value, null, 2) + '\n')
   }
 
@@ -47,6 +49,7 @@ export abstract class BaseCommand extends Command {
   override async init(): Promise<void> {
     await super.init()
     this._startTime = Date.now()
+    installProcessGuard(this.argv)
   }
 
   override async catch(err: Error): Promise<void> {
@@ -92,10 +95,12 @@ export abstract class BaseCommand extends Command {
   protected async loadConfigOrFail(): Promise<SupaForgeConfig> {
     try {
       return await loadConfig()
-    } catch {
-      this.error(
-        'Could not load supaforge.config.json. Run "supaforge init" first.',
-      )
+    } catch (err) {
+      // Only a missing file means "run init"; a broken one says what is wrong.
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
+        this.error('Could not load supaforge.config.json. Run "supaforge init" first.')
+      }
+      this.error(`Could not load supaforge.config.json: ${redactUrls(describeFailure(err))}`)
     }
   }
 

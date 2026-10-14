@@ -101,6 +101,48 @@ describe('sqlToIssues with units', () => {
   // critical "Extra trigger" for a trigger both sides have.
   // A changed view is a DROP and a CREATE: read by the DROP, a critical
   // "Extra view" for a view both sides have.
+  // A view others read is replaced in place when its columns allow, with no
+  // DROP; otherwise its unit drops and puts back what reads it too. Either
+  // way the finding is the view itself.
+  it('names a view replaced in place, or around its dependants, as modified', () => {
+    const issues = sqlToIssues({
+      up: units(
+        ['AlterView', 'base_v', 'CREATE OR REPLACE VIEW "base_v" AS SELECT id FROM items WHERE grp = 2;'],
+        ['AlterView', 'z_base', [
+          'DROP POLICY IF EXISTS "reads" ON "notes";',
+          'DROP VIEW IF EXISTS "deeper";',
+          'DROP VIEW IF EXISTS "a_top";',
+          'DROP VIEW IF EXISTS "z_base";',
+          'CREATE VIEW "z_base" AS SELECT id AS key FROM items;',
+          'CREATE VIEW "a_top" AS SELECT key FROM z_base;',
+          'CREATE VIEW "deeper" AS SELECT key FROM a_top;',
+          'CREATE POLICY "reads" ON "notes" USING (EXISTS (SELECT 1 FROM z_base));',
+        ].join('\n')],
+      ),
+      down: '',
+    }, 'schema')
+    expect(issues.map(i => [i.title, i.severity])).toEqual([
+      ['View modified: public.base_v', 'warning'],
+      ['View modified: public.z_base', 'warning'],
+    ])
+  })
+
+  it('names collations', () => {
+    const issues = sqlToIssues({
+      up: units(
+        ['CreateCollation', 'ci', `CREATE COLLATION "ci" (provider = icu, locale = 'und-u-ks-level2', deterministic = false);`],
+        ['AlterCollation', 'nd', `DROP COLLATION IF EXISTS "nd";\nCREATE COLLATION "nd" (provider = icu, locale = 'und');`],
+        ['DropCollation', 'old', 'DROP COLLATION IF EXISTS "old";'],
+      ),
+      down: '',
+    }, 'schema')
+    expect(issues.map(i => [i.title, i.severity])).toEqual([
+      ['Collation missing: public.ci', 'warning'],
+      ['Collation modified: public.nd', 'warning'],
+      ['Extra collation: public.old', 'critical'],
+    ])
+  })
+
   it('names a replaced view or materialized view as modified', () => {
     const issues = sqlToIssues({
       up: units(

@@ -1,5 +1,5 @@
 import pg from 'pg'
-import { pgClientConfig } from './db.js'
+import { newPgClient } from './db.js'
 import type { ScanResult, SyncAction } from './types/drift'
 import { errMsg } from './utils/error'
 import { ABSENT_ON_TARGET, EXTENSION_UNAVAILABLE, UNDEFINED_COLUMN, sqlState } from './pg-errors.js'
@@ -471,7 +471,7 @@ async function executeSql(
 ): Promise<void> {
   if (statements.length === 0) return
 
-  const client = new pg.Client(pgClientConfig(dbUrl))
+  const client = newPgClient(dbUrl)
   await client.connect()
   try {
     if (transactional) await runInTransaction(client, statements, result)

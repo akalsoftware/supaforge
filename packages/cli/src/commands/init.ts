@@ -8,6 +8,7 @@ import { UserCancelledError, isUserCancelled } from '../errors'
 import { printBanner, printHints, ok, warn, dim, cmd, bold } from '../ui'
 import { SUPAFORGE_DIR } from '../constants'
 import type { SupaForgeConfig, EnvironmentConfig } from '../types/config'
+import { installProcessGuard } from '../process-guard.js'
 
 const CONFIG_FILENAME = 'supaforge.config.json'
 
@@ -340,6 +341,7 @@ export default class Init extends Command {
   }
 
   async run(): Promise<void> {
+    installProcessGuard(this.argv)
     const { flags } = await this.parse(Init)
     const configPath = resolve(process.cwd(), CONFIG_FILENAME)
 

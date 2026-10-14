@@ -1,6 +1,6 @@
 import pg from 'pg'
 import { detectRuntime } from './local-pg.js'
-import { pgClientConfig, resolveConnectTimeoutMs } from './db.js'
+import { resolveConnectTimeoutMs, newPgClient } from './db.js'
 import { DB_PROBE_TIMEOUT_MS } from './constants.js'
 import { ok, warn, dim, cmd, bold } from './ui.js'
 import { redactUrls, describeFailure } from './utils/error.js'
@@ -72,7 +72,7 @@ export async function checkConnection(dbUrl: string): Promise<ConnCheckResult> {
   const connectTimeoutMs = resolveConnectTimeoutMs()
   let client: pg.Client | undefined
   try {
-    client = new pg.Client(pgClientConfig(dbUrl, DB_PROBE_TIMEOUT_MS))
+    client = newPgClient(dbUrl, DB_PROBE_TIMEOUT_MS)
     await client.connect()
     const { rows } = await client.query('SHOW server_version')
     const version = (rows[0] as Record<string, string>).server_version

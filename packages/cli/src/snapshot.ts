@@ -11,11 +11,12 @@ import { introspectSchema } from './schema-introspect'
 import { createPolicySql, dropPolicySql, schemaPolicySql, type SchemaPolicy } from './utils/schema-policies'
 import { PUBLICATION_SQL } from './checks/realtime'
 import type { SchemaSnapshot } from './schema-introspect'
-import { getServerMajorVersion, resolvePgDumpPath } from './pg-tools'
+import { assertPgBinUsable, describeMissingPgDump, getServerMajorVersion, resolvePgDumpPath } from './pg-tools'
 import { errMsg } from './utils/error'
 import { ok, warn, dim } from './ui'
 import { SUPABASE_PLATFORM_SCHEMAS } from './defaults'
 import { SUPABASE_MGMT_API, SUPAFORGE_DIR, SNAPSHOTS_SUBDIR, MIGRATIONS_SUBDIR } from './constants'
+import { httpStatus, readJsonArray, readJsonObject } from './utils/http.js'
 
 const execFile = promisify(execFileCb)
 
@@ -60,6 +61,7 @@ export function snapshotDir(cwd: string, timestamp: string): string {
  * Each layer is exported independently; failures in one layer don't block others.
  */
 export async function captureSnapshot(options: SnapshotOptions): Promise<SnapshotResult> {
+  assertPgBinUsable()
   const cwd = options.cwd ?? process.cwd()
   const timestamp = generateTimestamp()
   const dir = options.outputDir
@@ -129,6 +131,15 @@ export async function captureSnapshot(options: SnapshotOptions): Promise<Snapsho
 // ─── Layer Rendering ─────────────────────────────────────────────────────────
 
 /**
+ * Why a snapshot cannot restore its schema, or undefined when it can — no
+ * schema.sql, which needs a pg_dump at least as new as the server.
+ */
+export function unrestorableSchema(manifest: SnapshotManifest): string | undefined {
+  const schema = (manifest.layers as Record<string, SnapshotLayerInfo>).schema
+  return schema?.captured && schema.sqlSkipReason ? schema.sqlSkipReason : undefined
+}
+
+/**
  * Format a snapshot manifest's layers into per-line status strings.
  *
  * Shared by `supaforge snapshot` and `supaforge clone` so both surface exactly
@@ -139,7 +150,10 @@ export function formatSnapshotLayers(manifest: SnapshotManifest): string[] {
   const layers = manifest.layers as Record<string, SnapshotLayerInfo>
   const lines: string[] = []
   for (const [name, info] of Object.entries(layers)) {
-    if (info.captured) {
+    if (info.captured && info.sqlSkipReason) {
+      // Captured for diffing, but not as DDL restore can replay.
+      lines.push(`${warn('⚠')} ${name.padEnd(16)} ${info.itemCount} item(s) ${warn(`— no schema.sql, so restore cannot recreate the schema: ${info.sqlSkipReason}`)}`)
+    } else if (info.captured) {
       lines.push(`${ok('✓')} ${name.padEnd(16)} ${info.itemCount} item(s)`)
     } else if (info.error) {
       lines.push(`${warn('✗')} ${name.padEnd(16)} ${warn(`error: ${info.error}`)}`)
@@ -236,8 +250,7 @@ async function captureSchemaSql(
     const resolved = await resolvePgDumpPath(serverMajor)
     if (!resolved) {
       return {
-        sqlSkipReason:
-          `no pg_dump new enough for this server (needs ${serverMajor} or later) — `
+        sqlSkipReason: `${await describeMissingPgDump(serverMajor)} — `
           + 'schema.json was still captured, but restore cannot replay the schema',
       }
     }
@@ -313,8 +326,8 @@ async function captureEdgeFunctions(
     const res = await fetchFn(url, {
       headers: { Authorization: `Bearer ${token}` },
     })
-    if (!res.ok) throw new Error(res.statusText)
-    const functions = await res.json() as unknown[]
+    if (!res.ok) throw new Error(`HTTP ${httpStatus(res)}`)
+    const functions = await readJsonArray<unknown>(res, 'The Edge Function list')
     await writeFile(join(dir, file), JSON.stringify(functions, null, 2) + '\n')
     return { captured: true, file, itemCount: functions.length }
   } catch (err) {
@@ -388,8 +401,8 @@ async function captureAuthConfig(
     const res = await fetchFn(url, {
       headers: { Authorization: `Bearer ${token}` },
     })
-    if (!res.ok) throw new Error(res.statusText)
-    const config = await res.json() as Record<string, unknown>
+    if (!res.ok) throw new Error(`HTTP ${httpStatus(res)}`)
+    const config = await readJsonObject(res, 'The auth config')
     await writeFile(join(dir, file), JSON.stringify(config, null, 2) + '\n')
     return { captured: true, file, itemCount: Object.keys(config).length }
   } catch (err) {
