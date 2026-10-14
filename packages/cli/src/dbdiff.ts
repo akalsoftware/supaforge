@@ -363,7 +363,7 @@ const DOWN_MARKER = '-- ==================== DOWN ===================='
 const CREATE_FUNCTION = 'create-function'
 const DROP_FUNCTION = 'drop-function'
 
-const DROP_TYPES = ['drop', 'drop-view', DROP_FUNCTION, 'drop-trigger', 'drop-type', 'drop-sequence']
+const DROP_TYPES = ['drop', 'drop-view', DROP_FUNCTION, 'drop-trigger', 'drop-type', 'drop-sequence', 'drop-collation']
 
 /**
  * Does this statement destroy data, or weaken access control, if executed?
@@ -811,8 +811,10 @@ function replacedObject(
   statements: string[],
 ): { kind: ReplaceableKind; name: string } | undefined {
   const kind = REPLACING_KINDS[unit.kind]
+  if (!kind) return undefined
+  if (kind === 'view') return replacedView(unit, statements)
   const drop = statements.find(sql => replaceablePart(sql)?.drop)
-  if (!kind || !drop) return undefined
+  if (!drop) return undefined
 
   if (kind === 'type') return { kind, name: unit.object }
   const create = [...statements].reverse().find(sql => replaceablePart(sql)?.drop === false) ?? drop
@@ -823,6 +825,24 @@ function replacedObject(
       : REPLACEABLE_NAME[kind](create),
   }
 }
+
+/**
+ * The view a view's unit replaces. Besides its own statements the unit can
+ * drop and put back the views and policies reading it, so the view is the
+ * one dbdiff names; and replaced in place, it has no DROP at all.
+ */
+function replacedView(unit: DbDiffUnit, statements: string[]): { kind: ReplaceableKind; name: string } | undefined {
+  const views = statements.filter(sql => replaceablePart(sql)?.kind === 'view')
+  const own = (sql: string) => bareName(REPLACEABLE_NAME.view(sql)) === bareName(unit.object)
+  const create = views.find(sql => replaceablePart(sql)?.drop === false && own(sql))
+    ?? views.filter(sql => replaceablePart(sql)?.drop === false).pop()
+  const drop = views.find(sql => replaceablePart(sql)?.drop && own(sql)) ?? views.find(sql => replaceablePart(sql)?.drop)
+  const named = create ?? drop
+  return named ? { kind: 'view', name: REPLACEABLE_NAME.view(named) } : undefined
+}
+
+/** A name without its schema or quotes, for matching one to dbdiff's unit object. */
+const bareName = (name: string) => name.slice(name.lastIndexOf('.') + 1).replace(/"/g, '').toLowerCase()
 
 /**
  * The statement a unit is named by: for a table change, its first ALTER
@@ -975,7 +995,7 @@ interface MergedStatement {
  * same way — an enum whose values changed arrives as `DROP TYPE` + `CREATE
  * TYPE` — and needed the same treatment for the same two reasons (issue #81).
  */
-type ReplaceableKind = 'routine' | 'type' | 'sequence' | 'policy' | 'trigger' | 'view'
+type ReplaceableKind = 'routine' | 'type' | 'sequence' | 'policy' | 'trigger' | 'view' | 'collation'
 
 /** How each kind's identifier is read out of a statement. */
 const REPLACEABLE_NAME: Record<ReplaceableKind, (sql: string) => string> = {
@@ -987,6 +1007,7 @@ const REPLACEABLE_NAME: Record<ReplaceableKind, (sql: string) => string> = {
   // `schema.table.trigger`, for the same reason.
   trigger: (sql) => triggerLabel(sql),
   view: (sql) => extractQualifiedName(sql, AFTER.view),
+  collation: (sql) => extractQualifiedName(sql, AFTER.collation),
 }
 
 /** How a merged pair of each kind is reported. */
@@ -997,6 +1018,7 @@ const REPLACEABLE_REPORT: Record<ReplaceableKind, { idPart: string; label: strin
   policy:   { idPart: 'policy',   label: 'Policy modified',   what: 'Policy definition' },
   trigger:  { idPart: 'trigger',  label: 'Trigger modified',  what: 'Trigger definition' },
   view:     { idPart: 'view',     label: 'View modified',     what: 'View definition' },
+  collation: { idPart: 'collation', label: 'Collation modified', what: 'Collation definition' },
 }
 
 /** Whether a statement drops or creates a replaceable object, and of which kind. */
@@ -1022,6 +1044,8 @@ function replaceablePart(sql: string): { kind: ReplaceableKind; drop: boolean } 
     case 'drop-type':       return { kind: 'type',     drop: true }
     case 'create-sequence': return { kind: 'sequence', drop: false }
     case 'drop-sequence':   return { kind: 'sequence', drop: true }
+    case 'create-collation': return { kind: 'collation', drop: false }
+    case 'drop-collation':   return { kind: 'collation', drop: true }
     default:                return undefined
   }
 }
@@ -1338,6 +1362,10 @@ export function classifyStatement(sql: string): string {
   // Indexes
   if (upper.startsWith('CREATE INDEX') || upper.startsWith('CREATE UNIQUE INDEX')) return 'create-index'
   if (upper.startsWith('DROP INDEX')) return 'drop'
+  // Collations
+  if (upper.startsWith('CREATE COLLATION')) return 'create-collation'
+  if (upper.startsWith('ALTER COLLATION')) return 'alter-collation'
+  if (upper.startsWith('DROP COLLATION')) return 'drop-collation'
   // Sequences
   if (upper.startsWith('CREATE SEQUENCE')) return 'create-sequence'
   if (upper.startsWith('ALTER SEQUENCE')) return 'alter-sequence'
@@ -1377,6 +1405,7 @@ const AFTER = {
   table: /\bTABLE\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?(?:ONLY\s+)?/i,
   index: /\bINDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+(?:NOT\s+)?EXISTS\s+)?/i,
   policy: /\bPOLICY\s+(?:IF\s+EXISTS\s+)?/i,
+  collation: /\bCOLLATION\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?/i,
   on: /\bON\s+(?:ONLY\s+)?/i,
 }
 
@@ -1515,6 +1544,10 @@ const SCHEMA_RULES: SummaryRule[] = [
   { match: /^\s*COMMENT\s+ON\b/i, label: 'Comment changed', name: commentLabel },
   { match: /^\s*CREATE\s+EXTENSION\b/i, label: 'Extension missing', name: extensionLabel },
   { match: /^\s*DROP\s+EXTENSION\b/i, label: 'Extra extension', name: extensionLabel },
+
+  { match: /^\s*CREATE\s+COLLATION\b/i, label: 'Collation missing', name: named(AFTER.collation) },
+  { match: /^\s*ALTER\s+COLLATION\b/i, label: 'Collation altered', name: named(AFTER.collation) },
+  { match: /^\s*DROP\s+COLLATION\b/i, label: 'Extra collation', name: named(AFTER.collation) },
 
   { match: /^\s*CREATE\s+SEQUENCE\b/i, label: 'Sequence missing', name: named(AFTER.sequence) },
   { match: /^\s*ALTER\s+SEQUENCE\b/i, label: 'Sequence altered', name: named(AFTER.sequence) },

@@ -10,7 +10,7 @@ import { scan } from '../scanner.js'
 import { promote } from '../promote.js'
 import { checkConnection } from '../preflight.js'
 import { redactUrls, describeFailure } from '../utils/error.js'
-import { captureSnapshot } from '../snapshot.js'
+import { captureSnapshot, unrestorableSchema } from '../snapshot.js'
 import { backup } from '../migration.js'
 import { CHECK_NAMES } from '../types/drift.js'
 import type { ScanResult, CheckName } from '../types/drift.js'
@@ -328,11 +328,18 @@ export function createServer(cwd = process.cwd(), options: ServerOptions = {}): 
         }
 
         const result = await captureSnapshot({ envName, env, config, cwd: effectiveCwd })
+        const unrestorable = unrestorableSchema(result.manifest)
         return {
           content: [
             {
               type: 'text' as const,
-              text: JSON.stringify({ timestamp: result.timestamp, dir: result.dir, manifest: result.manifest }, null, 2),
+              text: JSON.stringify({
+                timestamp: result.timestamp,
+                dir: result.dir,
+                manifest: result.manifest,
+                // Said up front: restore is the wrong moment to find out.
+                ...(unrestorable ? { warning: `This snapshot cannot restore the schema: ${unrestorable}` } : {}),
+              }, null, 2),
             },
           ],
         }

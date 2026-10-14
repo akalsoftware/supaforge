@@ -158,6 +158,24 @@ describe('diffGrants', () => {
     expect(issue.sql!.up).toBe('GRANT UPDATE ("display_name") ON "public"."profiles" TO "authenticated";')
     expect(diffGrants([grant({ column_name: 'a' })], [grant({ column_name: 'b' })])).toHaveLength(2)
   })
+  it('makes the grants to a role the target lacks one finding, carrying every grant', () => {
+    const fns = ['a', 'b', 'c'].map(name => grant({
+      grantee: 'anon', privilege_type: 'EXECUTE', object_kind: 'function', table_name: name, args: 'integer',
+    }))
+    const issues = diffGrants([...fns, grant({ grantee: 'authenticated', privilege_type: 'SELECT' })], [], new Set(['anon']))
+    const anon = issues.filter(i => i.title.includes(' to anon'))
+    expect(anon).toHaveLength(1)
+    expect(anon[0].id).toBe('roles-grant-missing-role-anon')
+    expect(anon[0].title).toBe('Missing grants: 3 privileges on 3 objects to anon, a role the target does not have')
+    expect(anon[0].sql!.up.split('\n')).toEqual([
+      'GRANT EXECUTE ON FUNCTION "public"."a"(integer) TO "anon";',
+      'GRANT EXECUTE ON FUNCTION "public"."b"(integer) TO "anon";',
+      'GRANT EXECUTE ON FUNCTION "public"."c"(integer) TO "anon";',
+    ])
+    expect(anon[0].sql!.down.split('\n')[0]).toBe('REVOKE EXECUTE ON FUNCTION "public"."c"(integer) FROM "anon";')
+    // A role the target has is still reported grant by grant.
+    expect(issues.filter(i => i.title.includes('authenticated'))).toHaveLength(1)
+  })
 })
 
 /**

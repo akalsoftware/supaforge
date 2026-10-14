@@ -386,12 +386,19 @@ export class RolesCheck extends Check {
       ...diffGrants(
         [...sourceAll, ...(sourceColumns ?? [])].filter(g => comparable(g) && !byDefault(g)),
         [...targetAll, ...(targetColumns ?? [])].filter(comparable),
+        absentOn(targetRoles, sourceRoles),
       ),
       ...defaultGrantsToRevoke(
         sourceObjects, targetObjects,
         (targetDefaults ?? []).filter(d => comparable(d as RoleGrant)), sourceAll),
     ]
   }
+}
+
+/** Roles the source has and the target does not. PUBLIC is not a role either side lists. */
+function absentOn(target: PgRole[] | undefined, source: PgRole[] | undefined): Set<string> {
+  const present = new Set((target ?? []).map(r => r.rolname))
+  return new Set((source ?? []).map(r => r.rolname).filter(name => !present.has(name)))
 }
 
 function roleAttrs(r: PgRole): string {
@@ -569,6 +576,38 @@ function describeGroup(gs: RoleGrant[]): string {
 const groupKey = (gs: RoleGrant[]) => grantKey(gs[0]).replace(/\.[^.]+$/, '')
 
 /**
+ * Grants to a role the target does not have, one finding per role.
+ *
+ * Each would otherwise be a finding of its own, and against a plain
+ * PostgreSQL copy of a Supabase project — no `anon`, `authenticated` or
+ * `service_role` — that was a finding per function per role: hundreds,
+ * burying the rest. None can apply until the role exists, which is a finding
+ * of its own; this one carries every grant for when it does.
+ */
+function grantsToMissingRoles(grants: RoleGrant[]): DriftIssue[] {
+  const byRole = new Map<string, RoleGrant[]>()
+  for (const g of grants) byRole.set(g.grantee, [...(byRole.get(g.grantee) ?? []), g])
+  return [...byRole].map(([role, gs]) => {
+    const groups = grouped(gs)
+    const objects = new Set(gs.map(g => describeObject(g))).size
+    const what = `${gs.length} privilege${gs.length === 1 ? '' : 's'} on ${objects} object${objects === 1 ? '' : 's'}`
+    return {
+      id: `roles-grant-missing-role-${role}`,
+      check: 'roles' as const,
+      severity: 'warning' as const,
+      title: `Missing grants: ${what} to ${role}, a role the target does not have`,
+      description: `The source grants ${what} to "${role}", which the target lacks. They can only be applied once `
+        + 'the role exists (see "Missing role"); on a target that is not meant to have it, skip the roles check.',
+      sourceValue: gs,
+      sql: {
+        up: groups.map(g => `GRANT ${groupTarget(g)} TO ${granteeSql(role)}${g[0].is_grantable ? ' WITH GRANT OPTION' : ''};`).join('\n'),
+        down: groups.map(g => `REVOKE ${groupTarget(g)} FROM ${granteeSql(role)};`).reverse().join('\n'),
+      },
+    }
+  })
+}
+
+/**
  * Grants on the target that differ from the source's.
  *
  * Missing and extra grants are one finding per role, table (or column) and
@@ -576,13 +615,18 @@ const groupKey = (gs: RoleGrant[]) => grantKey(gs[0]).replace(/\.[^.]+$/, '')
  * table granted to Supabase's three API roles twenty-odd findings, most of a
  * report.
  */
-export function diffGrants(source: RoleGrant[], target: RoleGrant[]): DriftIssue[] {
+export function diffGrants(
+  source: RoleGrant[],
+  target: RoleGrant[],
+  missingRoles: ReadonlySet<string> = new Set(),
+): DriftIssue[] {
   const issues: DriftIssue[] = []
   const sourceMap = new Map(source.map(g => [grantKey(g), g]))
   const targetMap = new Map(target.map(g => [grantKey(g), g]))
 
   const missing = [...sourceMap].filter(([key]) => !targetMap.has(key)).map(([, g]) => g)
-  for (const gs of grouped(missing)) {
+  issues.push(...grantsToMissingRoles(missing.filter(g => missingRoles.has(g.grantee))))
+  for (const gs of grouped(missing.filter(g => !missingRoles.has(g.grantee)))) {
     const plural = gs.length > 1 ? 's' : ''
     issues.push({
       id: `roles-grant-missing-${groupKey(gs)}`,

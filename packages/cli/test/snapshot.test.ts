@@ -9,6 +9,8 @@ import {
   findLatestSnapshot,
   listSnapshots,
   captureSnapshot,
+  formatSnapshotLayers,
+  unrestorableSchema,
 } from '../src/snapshot.js'
 import type { SnapshotManifest } from '../src/types/config.js'
 import type { QueryFn } from '../src/db.js'
@@ -537,5 +539,44 @@ describe('captureSnapshot: grants are captured one statement per role and object
       'GRANT DELETE, SELECT ON "public"."items" TO "anon";',
       'GRANT MAINTAIN ON "public"."items" TO "anon";',
     ])
+  })
+})
+
+describe('a snapshot without schema.sql', () => {
+  const manifest = (schema: Record<string, unknown>) => ({
+    timestamp: '20250101T120000Z',
+    environment: 'dev',
+    layers: { schema: { captured: true, file: 'schema.json', itemCount: 3, ...schema } },
+  }) as unknown as SnapshotManifest
+
+  it('is flagged in the summary, not ticked', () => {
+    const lines = formatSnapshotLayers(manifest({ sqlSkipReason: 'no pg_dump 17 or newer (found: none on PATH)' }))
+    expect(lines[0]).toContain('⚠')
+    expect(lines[0]).not.toContain('✓')
+    expect(lines[0]).toContain('restore cannot recreate the schema')
+    expect(lines[0]).toContain('no pg_dump 17 or newer')
+  })
+
+  it('says why it cannot restore its schema', () => {
+    expect(unrestorableSchema(manifest({ sqlSkipReason: 'why' }))).toBe('why')
+    expect(unrestorableSchema(manifest({ sqlFile: 'schema.sql' }))).toBeUndefined()
+  })
+
+  it('is refused before anything is captured when SUPAFORGE_PG_BIN names no pg_dump', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'supaforge-pgbin-'))
+    process.env.SUPAFORGE_PG_BIN = '/nonexistent/pg/bin'
+    try {
+      await expect(captureSnapshot({
+        envName: 'dev',
+        env: { dbUrl: 'postgres://u:p@127.0.0.1:1/db' } as never,
+        config: { environments: {} } as never,
+        cwd,
+        queryFn: (async () => []) as QueryFn,
+      })).rejects.toThrow(/SUPAFORGE_PG_BIN.*\/nonexistent\/pg\/bin.*no pg_dump/)
+      expect(await listSnapshots(cwd)).toEqual([])
+    } finally {
+      delete process.env.SUPAFORGE_PG_BIN
+      await rm(cwd, { recursive: true, force: true })
+    }
   })
 })
