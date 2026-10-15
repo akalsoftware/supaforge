@@ -84,6 +84,8 @@ export interface SupaForgeConfig {
   source?: string
   target?: string
   ignoreSchemas?: string[]
+  /** Extensions the extensions check does not report as extra on the target. */
+  ignoreExtensions?: string[]
   checks?: ChecksConfig
 }
 

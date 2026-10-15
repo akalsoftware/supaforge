@@ -96,7 +96,7 @@ export interface ProofResult {
 }
 
 /** Replace the database name in a libpq URL, keeping everything else. */
-function withDatabase(dbUrl: string, database: string): string {
+export function withDatabase(dbUrl: string, database: string): string {
   const url = new URL(dbUrl)
   url.pathname = `/${database}`
   return url.toString()
@@ -374,7 +374,7 @@ export async function proveConvergence(opts: {
   }
 }
 
-interface PgTools { pgDump: string; psql: string; clientMajor: number; serverMajor: number }
+export interface PgTools { pgDump: string; psql: string; clientMajor: number; serverMajor: number }
 
 /**
  * Copy `fromUrl`'s structure in the given schemas into the empty database at
@@ -388,7 +388,7 @@ interface PgTools { pgDump: string; psql: string; clientMajor: number; serverMaj
  * into a clone that deliberately has no such schema. `--prove` therefore
  * failed on every real Supabase project, whatever the client version.
  */
-async function copyStructure(
+export async function copyStructure(
   fromUrl: string, intoUrl: string, schemas: string[], tools: PgTools, migratingFrom?: string,
 ): Promise<void> {
   // Prepare the copy to receive the proved schemas, and nothing else.
@@ -525,7 +525,7 @@ async function copyOfSource(
 }
 
 /** Drop a throwaway database, ending any session still attached first. */
-async function dropDatabase(adminUrl: string, name: string): Promise<void> {
+export async function dropDatabase(adminUrl: string, name: string): Promise<void> {
   await pgQuery(adminUrl,
     `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
       WHERE datname = '${name}' AND pid <> pg_backend_pid()`).catch(() => undefined)
@@ -541,7 +541,7 @@ async function dropDatabase(adminUrl: string, name: string): Promise<void> {
  * loudly instead of producing a partially-migrated clone that then reports
  * confusing residual drift.
  */
-function runSql(psqlPath: string, dbUrl: string, sql: string): Promise<void> {
+export function runSql(psqlPath: string, dbUrl: string, sql: string): Promise<void> {
   const trimmed = sql.trim()
   if (!trimmed) return Promise.resolve()
 
@@ -565,7 +565,7 @@ function runSql(psqlPath: string, dbUrl: string, sql: string): Promise<void> {
 }
 
 /** psql ships alongside pg_dump; reuse the version-matched directory. */
-function psqlBeside(pgDumpPath: string): string {
+export function psqlBeside(pgDumpPath: string): string {
   return pgDumpPath === 'pg_dump' ? 'psql' : join(dirname(pgDumpPath), 'psql')
 }
 

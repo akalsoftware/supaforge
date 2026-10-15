@@ -114,6 +114,7 @@ Useful `diff` flags:
 | `--only=<id,...>` | Apply only these findings (ids come from `--json`, globs allowed) |
 | `--dry-run` | Print the fixes in the order they'd run, run nothing |
 | `--prove` | Rehearse the fixes on a throwaway copy first |
+| `--source-dir <dir>` | Compare a directory of schema files (such as `supabase/schemas`) with the target instead of a source database |
 | `--allow-destructive` | Also apply drops and deletes |
 | `--apply-posture` | Also apply the target-only checks' fixes |
 | `--no-transaction` | Apply fix by fix, keeping what works |

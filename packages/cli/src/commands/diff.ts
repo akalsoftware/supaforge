@@ -1,4 +1,4 @@
-import { Flags } from '@oclif/core'
+import { Flags, type Interfaces } from '@oclif/core'
 import { BaseCommand } from '../base-command.js'
 import { createDefaultRegistry } from '../checks/index.js'
 import { scan } from '../scanner.js'
@@ -20,6 +20,14 @@ import { CLONE_SKIP_FLAGS, DEFAULT_IGNORE_SCHEMAS, schemaDiffIgnores } from '../
 import { Preflight } from '../preflight.js'
 import type { SupaForgeConfig } from '../types/config.js'
 import { redactUrls, describeFailure } from '../utils/error.js'
+import { openSchemaDir } from '../schema-dir.js'
+
+
+/** The source environment a --source-dir run compares from. */
+const SCHEMA_FILES_ENV = 'schema files'
+
+/** What schema files can describe: the database's structure, its policies, its extensions. */
+const SCHEMA_FILE_CHECKS: CheckName[] = ['schema', 'rls', 'extensions']
 
 /**
  * Glyph and text for a finished check, so the three outcomes are visually
@@ -136,6 +144,11 @@ export default class Diff extends BaseCommand {
   ]
 
   static override flags = {
+    'source-dir': Flags.string({
+      description: 'Compare a directory of schema files (such as supabase/schemas) with the target, '
+        + 'instead of a source database. They are loaded into a throwaway database on the target\'s server.',
+      exclusive: ['source'],
+    }),
     check: Flags.string({
       char: 'l',
       description: 'Limit to a specific check',
@@ -286,10 +299,40 @@ export default class Diff extends BaseCommand {
     }
 
     const config = await this.loadConfigOrFail()
+
+    // Schema files as the source: loaded into a throwaway database on the
+    // target's server, compared, and dropped — see schema-dir.ts.
+    if (flags['source-dir']) {
+      const { envName: targetName } = this.resolveEnv(config, flags.target ?? config.target)
+      const loaded = await openSchemaDir(flags['source-dir'], config.environments[targetName].dbUrl)
+      this.log(`  ${dim(`Loaded ${loaded.statements} statement(s) from ${loaded.files} file(s) in ${flags['source-dir']}.`)}\n`)
+      config.environments = { ...config.environments, [SCHEMA_FILES_ENV]: { dbUrl: loaded.url } }
+      // What the platform owns and the copy could not hold is not the files'.
+      config.ignoreSchemas = [...(config.ignoreSchemas ?? DEFAULT_IGNORE_SCHEMAS), ...loaded.unavailable.schemas]
+      config.ignoreExtensions = [...(config.ignoreExtensions ?? []), ...loaded.unavailable.extensions]
+      config.source = SCHEMA_FILES_ENV
+      config.target = targetName
+      try {
+        await this.compare(flags, config, flags.check ? undefined : SCHEMA_FILE_CHECKS)
+      } finally {
+        await loaded.close()
+      }
+      return
+    }
+
     this.validateDualEnvConfig(config, flags.source, flags.target)
+    await this.compare(flags, config)
+  }
+
+  /** The comparison itself, between the config's source and target. */
+  private async compare(
+    flags: Interfaces.InferredFlags<typeof Diff.flags>,
+    config: SupaForgeConfig,
+    defaultChecks?: CheckName[],
+  ): Promise<void> {
 
     const registry = createDefaultRegistry({ includeFiles: flags['include-files'] })
-    const checks = flags.check ? [flags.check as CheckName] : undefined
+    const checks = flags.check ? [flags.check as CheckName] : defaultChecks
     const skip = flags.skip?.length ? (flags.skip as CheckName[]) : undefined
 
     const tableFilter = resolveTableFilter(config, {

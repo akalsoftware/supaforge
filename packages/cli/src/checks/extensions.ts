@@ -22,7 +22,8 @@ export class ExtensionsCheck extends Check {
       this.fetchExtensions(ctx.source.dbUrl),
       this.fetchExtensions(ctx.target.dbUrl),
     ])
-    return diffExtensions(source, target)
+    const ignored = new Set(ctx.config.ignoreExtensions ?? [])
+    return diffExtensions(source, target.filter(e => !ignored.has(e.name) || source.some(s => s.name === e.name)))
   }
 
   private async fetchExtensions(dbUrl: string): Promise<PgExtension[]> {
