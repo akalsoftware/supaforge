@@ -96,13 +96,17 @@ function pipeCopy(psql: string, fromUrl: string, intoUrl: string, out: string, i
   })
 }
 
-/** Each table's row count, a hash of each column's values, and its storage. */
+/**
+ * Each table's row count, a hash of each column's values, and its storage.
+ * A generated column is left out: its values follow its expression, which a
+ * fix may mean to change.
+ */
 export async function snapshotTables(dbUrl: string, schemas: string[]): Promise<Map<string, TableSnapshot>> {
   const rows = await pgQuery(dbUrl, `
     SELECT n.nspname || '.' || c.relname AS name, quote_ident(n.nspname) || '.' || quote_ident(c.relname) AS ident,
            json_agg(json_build_array(a.attname, format_type(a.atttypid, a.atttypmod)) ORDER BY a.attnum) AS columns
       FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-      JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+      JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped AND a.attgenerated = ''
      WHERE c.relkind = 'r' AND NOT c.relispartition AND n.nspname = ANY($1::text[])
      GROUP BY 1, 2 ORDER BY 1`, [schemas]) as Array<{ name: string; ident: string; columns: Array<[string, string]> }>
   const out = new Map<string, TableSnapshot>()
