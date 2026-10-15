@@ -116,7 +116,7 @@ function withDatabase(dbUrl: string, database: string): string {
  * lives in one place that both projects depend on.
  */
 
-async function fingerprint(dbUrl: string, schemas: string[]): Promise<string> {
+export async function fingerprint(dbUrl: string, schemas: string[]): Promise<string> {
   const rows = await pgQuery(dbUrl, fingerprintSql(schemas)) as unknown as
     Array<{ fingerprint: string | null }>
 
