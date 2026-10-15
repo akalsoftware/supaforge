@@ -465,3 +465,20 @@ describe('computeCiExitCode — drift and posture are different scopes (issue #6
     expect(computeCiExitCode(mixed, 'critical')).toBe(1)
   })
 })
+
+describe('formatCiSummary carries what a check could not compare', () => {
+  it('lists each notice with its check, and none when there are none', () => {
+    const result: ScanResult = {
+      timestamp: '2026-03-21T00:00:00.000Z', source: 'dev', target: 'prod', score: 100, postureScore: null,
+      summary: { total: 0, critical: 0, warning: 0, info: 0 },
+      checks: [
+        { check: 'schema', status: 'clean', issues: [], notices: ['Not compared: Operator (source 1, target 0: ===) — check them by hand.'], durationMs: 1 },
+        { check: 'rls', status: 'clean', issues: [], durationMs: 1 },
+      ],
+    }
+    expect(formatCiSummary(result).notices).toEqual([
+      { check: 'schema', notice: 'Not compared: Operator (source 1, target 0: ===) — check them by hand.' },
+    ])
+    expect(formatCiSummary({ ...result, checks: [result.checks[1]] }).notices).toEqual([])
+  })
+})

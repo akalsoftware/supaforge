@@ -34,6 +34,7 @@ import { splitSqlStatements, isCommentOnly } from './utils/sql-split.js'
 import { quoteName } from './utils/sql.js'
 import { globToRegExp } from './utils/strings.js'
 import { join, dirname } from 'node:path'
+import { compareTables, sampleInto, sampleRows, snapshotTables, type DataProof } from './prove-data.js'
 
 const exec = promisify(execFile)
 
@@ -87,10 +88,15 @@ export interface ProofResult {
    * outsideTheRun(). They do not count against convergence.
    */
   outOfScope?: string[]
+  /**
+   * What became of a sample of the target's rows — see prove-data.ts. A
+   * kept table that lost rows fails the proof.
+   */
+  data?: DataProof
 }
 
 /** Replace the database name in a libpq URL, keeping everything else. */
-function withDatabase(dbUrl: string, database: string): string {
+export function withDatabase(dbUrl: string, database: string): string {
   const url = new URL(dbUrl)
   url.pathname = `/${database}`
   return url.toString()
@@ -110,7 +116,7 @@ function withDatabase(dbUrl: string, database: string): string {
  * lives in one place that both projects depend on.
  */
 
-async function fingerprint(dbUrl: string, schemas: string[]): Promise<string> {
+export async function fingerprint(dbUrl: string, schemas: string[]): Promise<string> {
   const rows = await pgQuery(dbUrl, fingerprintSql(schemas)) as unknown as
     Array<{ fingerprint: string | null }>
 
@@ -278,6 +284,11 @@ export async function proveConvergence(opts: {
     const scoped = opts.checks !== undefined && !opts.checks.includes('schema')
     const before = scoped ? await schemaState(cloneUrl, schemas) : undefined
 
+    // A sample of the target's rows, to see that they survive.
+    const limit = sampleRows()
+    const sample = limit > 0 ? await sampleInto(psql, opts.targetUrl, cloneUrl, schemas, limit) : undefined
+    const tablesBefore = sample ? await snapshotTables(cloneUrl, schemas) : undefined
+
     // The migration under test.
     let notApplied: ProofResult['notApplied']
     if (opts.fixes) {
@@ -297,7 +308,17 @@ export async function proveConvergence(opts: {
     } else {
       await runSql(psql, cloneUrl, opts.migrationSql)
     }
-    const reported = (r: ProofResult): ProofResult => (notApplied?.length ? { ...r, notApplied } : r)
+    let data: DataProof | undefined
+    if (sample && tablesBefore) {
+      data = { ...sample, ...compareTables(tablesBefore, await snapshotTables(cloneUrl, schemas), sample.sampled, opts.migrationSql) }
+      if (data.lost.length > 0) {
+        return { converged: false, cloneName, data, residual: data.lost.map(l => `rows lost in ${l}`) }
+      }
+    }
+    const reported = (r: ProofResult): ProofResult => {
+      const withData = data ? { ...r, data } : r
+      return notApplied?.length ? { ...withData, notApplied } : withData
+    }
 
     const [want, got] = await Promise.all([
       fingerprint(opts.sourceUrl, schemas),
@@ -353,7 +374,7 @@ export async function proveConvergence(opts: {
   }
 }
 
-interface PgTools { pgDump: string; psql: string; clientMajor: number; serverMajor: number }
+export interface PgTools { pgDump: string; psql: string; clientMajor: number; serverMajor: number }
 
 /**
  * Copy `fromUrl`'s structure in the given schemas into the empty database at
@@ -367,7 +388,7 @@ interface PgTools { pgDump: string; psql: string; clientMajor: number; serverMaj
  * into a clone that deliberately has no such schema. `--prove` therefore
  * failed on every real Supabase project, whatever the client version.
  */
-async function copyStructure(
+export async function copyStructure(
   fromUrl: string, intoUrl: string, schemas: string[], tools: PgTools, migratingFrom?: string,
 ): Promise<void> {
   // Prepare the copy to receive the proved schemas, and nothing else.
@@ -504,7 +525,7 @@ async function copyOfSource(
 }
 
 /** Drop a throwaway database, ending any session still attached first. */
-async function dropDatabase(adminUrl: string, name: string): Promise<void> {
+export async function dropDatabase(adminUrl: string, name: string): Promise<void> {
   await pgQuery(adminUrl,
     `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
       WHERE datname = '${name}' AND pid <> pg_backend_pid()`).catch(() => undefined)
@@ -520,7 +541,7 @@ async function dropDatabase(adminUrl: string, name: string): Promise<void> {
  * loudly instead of producing a partially-migrated clone that then reports
  * confusing residual drift.
  */
-function runSql(psqlPath: string, dbUrl: string, sql: string): Promise<void> {
+export function runSql(psqlPath: string, dbUrl: string, sql: string): Promise<void> {
   const trimmed = sql.trim()
   if (!trimmed) return Promise.resolve()
 
@@ -544,7 +565,7 @@ function runSql(psqlPath: string, dbUrl: string, sql: string): Promise<void> {
 }
 
 /** psql ships alongside pg_dump; reuse the version-matched directory. */
-function psqlBeside(pgDumpPath: string): string {
+export function psqlBeside(pgDumpPath: string): string {
   return pgDumpPath === 'pg_dump' ? 'psql' : join(dirname(pgDumpPath), 'psql')
 }
 
@@ -688,6 +709,11 @@ export function explainStructureFailure(
 /** `DROP <kind> [IF EXISTS] <name>` and `DROP COLUMN [IF EXISTS] <name>`, capturing the bare name. */
 const DROPPED_NAME = /\bDROP\s+(?:TABLE|VIEW|MATERIALIZED\s+VIEW|TYPE|DOMAIN|SEQUENCE|FUNCTION|PROCEDURE|INDEX|COLUMN|CONSTRAINT|POLICY|TRIGGER)\s+(?:IF\s+EXISTS\s+)?(?:(?:"[^"]+"|[\w$]+)\s*\.\s*)?("[^"]+"|[\w$]+)/gi
 
+/** `table.column` as written by format('%I.%I'), each part unquoted and lower-cased. */
+function identParts(qualified: string): string[] {
+  return [...qualified.matchAll(/"((?:[^"]|"")+)"|([^."]+)/g)].map(m => (m[1]?.replace(/""/g, '"') ?? m[2]).toLowerCase())
+}
+
 /** `CREATE [OR REPLACE] <kind> [IF NOT EXISTS] <name>`, capturing the bare name. */
 const CREATED_NAME = /\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:UNIQUE\s+)?(?:TABLE|VIEW|MATERIALIZED\s+VIEW|TYPE|DOMAIN|SEQUENCE|FUNCTION|PROCEDURE|INDEX|POLICY|TRIGGER|EXTENSION)\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:(?:"[^"]+"|[\w$]+)\s*\.\s*)?("[^"]+"|[\w$]+)/gi
 
@@ -721,10 +747,12 @@ export function residualHeldBack(
   const heldBack: string[] = []
   const unexplained: string[] = []
   for (const line of residual) {
-    const subject = /^[a-z ]+?\s([^\s:]+(?:\s[^\s:]+)?):\s*unexpected$/i.exec(line)?.[1]
+    const [, subject, owner] = /^[a-z ]+?\s([^\s:]+(?:\s[^\s:]+)?):\s*unexpected(?: \(owned by (.+)\))?$/i.exec(line) ?? []
     const name = subject?.split(/[.\s]/).pop()?.replace(/^"|"$/g, '').toLowerCase()
+    // A sequence a column owns goes with the column, or its table.
+    const owners = owner ? identParts(owner) : []
     const missing = /^(.*):\s*missing$/i.exec(line)?.[1].toLowerCase()
-    if (name && dropped.has(name)) heldBack.push(line)
+    if ((name && dropped.has(name)) || owners.some(o => dropped.has(o))) heldBack.push(line)
     else if (missing && created.some(n => missing.endsWith(` ${n}`) || missing.endsWith(`.${n}`))) heldBack.push(line)
     else unexplained.push(line)
   }

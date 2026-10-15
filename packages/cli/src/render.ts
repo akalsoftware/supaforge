@@ -143,6 +143,7 @@ export function renderSummary(result: ScanResult): string {
 
   for (const lr of result.checks) {
     lines.push(formatCheckLine(lr))
+    for (const notice of lr.notices ?? []) lines.push(`      ${dim(`ⓘ ${notice}`)}`)
   }
 
   lines.push('')
@@ -242,6 +243,9 @@ function formatIssue(issue: DriftIssue): string {
   const lines: string[] = []
   lines.push(`  ${severityIcon(issue.severity)} ${colorSeverity(issue.severity)} ${bold(issue.title)}`)
   lines.push(`    ${dim(issue.description)}`)
+  for (const hazard of issue.hazards ?? []) {
+    lines.push(`    ${warn(hazard.kind === 'data-loss' ? '⛔' : '⏳')} ${warn(hazard.detail)}`)
+  }
 
   if (issue.sql) {
     lines.push('')

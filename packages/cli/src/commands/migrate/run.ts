@@ -11,6 +11,8 @@ import { isDestructiveSql } from '../../dbdiff.js'
 import { splitSqlStatements } from '../../utils/sql-split.js'
 import { readFile } from 'node:fs/promises'
 import { errMsg } from '../../utils/error.js'
+import { DEFAULT_IGNORE_SCHEMAS } from '../../defaults.js'
+import { targetFingerprint, writtenAgainst } from '../../written-against.js'
 
 /**
  * Execute pending migrations against a Supabase environment.
@@ -54,6 +56,10 @@ export default class MigrateRun extends BaseCommand {
     }),
     'allow-destructive': Flags.boolean({
       description: 'Permit migrations that drop tables or columns, delete rows, or drop policies',
+      default: false,
+    }),
+    force: Flags.boolean({
+      description: 'Run a migration even though the target has changed since it was written against it',
       default: false,
     }),
   }
@@ -116,6 +122,19 @@ export default class MigrateRun extends BaseCommand {
       }
     }
 
+    // The first pending migration written against this environment is
+    // checked against the target as it is now; the ones after it follow it.
+    const stale = await this.changedSinceWritten(pending, envName, env.dbUrl, config.ignoreSchemas ?? DEFAULT_IGNORE_SCHEMAS)
+    if (stale) {
+      this.log('')
+      this.log(warn(`${stale} was written against ${envName} as it was then, and ${envName} has changed since.`))
+      this.log(`  ${dim('Re-create it with migrate create, or pass --force to run it anyway.')}`)
+      if (flags.apply && !flags.force) {
+        this.log(`\n${warn('Nothing was applied.')}`)
+        this.exit(1)
+      }
+    }
+
     if (!flags.apply) {
       this.log(`\n${dim('Preview only — nothing was applied.')} Re-run with ${bold('--apply')} to execute`
         + (destructive.length > 0 ? `, and ${bold('--allow-destructive')} for the statements above.` : '.'))
@@ -144,6 +163,18 @@ export default class MigrateRun extends BaseCommand {
     }
 
     this.log(`\n${ok(`Applied ${applied_count} migration(s) successfully.`)} ✓`)
+  }
+
+  /** The first pending migration written against `envName`, if the target has changed since. */
+  private async changedSinceWritten(
+    pending: Array<{ filename: string; path: string }>, envName: string, dbUrl: string, ignoreSchemas: readonly string[],
+  ): Promise<string | undefined> {
+    const [first] = pending
+    if (!first) return undefined
+    const header = writtenAgainst(await readFile(first.path, 'utf-8').catch(() => ''))
+    if (!header || header.env !== envName) return undefined
+    const now = await targetFingerprint(dbUrl, ignoreSchemas).catch(() => header.digest)
+    return now === header.digest ? undefined : first.filename
   }
 }
 

@@ -11,6 +11,8 @@ import { computeScore, computePostureScore, summarize } from './scoring'
 import type { Check, CheckContext } from './checks/base'
 import { isCheckSkipped } from './checks/base'
 import { friendlyDbError } from './utils/error'
+import { hazardsOf } from './hazards.js'
+import type { DriftIssue } from './types/drift.js'
 
 export type ScanProgressEvent =
   | { phase: 'check:start'; check: CheckName; index: number; total: number }
@@ -83,6 +85,15 @@ function checkConcurrency(): number {
   return 4
 }
 
+/** Each fix with what applying it does to a live database — see hazards.ts. */
+function withHazards(issues: DriftIssue[]): DriftIssue[] {
+  return issues.map(issue => {
+    if (!issue.sql?.up) return issue
+    const hazards = hazardsOf(issue.sql.up)
+    return hazards.length > 0 ? { ...issue, hazards } : issue
+  })
+}
+
 async function runCheck(
   check: Check,
   ctx: CheckContext,
@@ -90,12 +101,14 @@ async function runCheck(
   sourceDbUrl: string,
 ): Promise<CheckResult> {
   const start = performance.now()
+  const notices: string[] = []
   try {
-    const issues = await check.scan(ctx)
+    const issues = withHazards(await check.scan({ ...ctx, onNotice: n => notices.push(n) }))
     return {
       check: name,
       status: issues.length > 0 ? 'drifted' : 'clean',
       issues,
+      ...(notices.length > 0 ? { notices } : {}),
       durationMs: Math.round(performance.now() - start),
     }
   } catch (err) {

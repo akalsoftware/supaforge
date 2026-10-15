@@ -50,6 +50,29 @@ describe('scan', () => {
     expect(result.score).toBe(100)
   })
 
+  // What a check could not compare is said beside its result, and is not
+  // drift: the check stays clean and the score whole.
+  it('keeps a check\'s notices beside its findings, out of the count', async () => {
+    class NoticingLayer extends Check {
+      readonly name = 'schema' as const
+      async scan(ctx: CheckContext): Promise<DriftIssue[]> {
+        ctx.onNotice?.('Not compared: Operator (source 1, target 0: ===) — check them by hand.')
+        return []
+      }
+    }
+    const registry = new CheckRegistry()
+    registry.register(new NoticingLayer())
+
+    const result = await scan(registry, { config, checks: ['schema'] })
+
+    expect(result.checks[0]).toMatchObject({
+      status: 'clean',
+      notices: ['Not compared: Operator (source 1, target 0: ===) — check them by hand.'],
+    })
+    expect(result.summary.total).toBe(0)
+    expect(result.score).toBe(100)
+  })
+
   it('returns drifted status when issues found', async () => {
     const registry = new CheckRegistry()
     registry.register(new MockLayer('rls', [

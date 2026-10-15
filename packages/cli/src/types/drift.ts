@@ -1,6 +1,6 @@
 export const CHECK_NAMES = [
   'schema', 'rls', 'rls-coverage', 'edge-functions', 'storage', 'auth', 'cron', 'data',
-  'webhooks', 'realtime', 'vault', 'extensions', 'migrations', 'roles',
+  'webhooks', 'realtime', 'vault', 'extensions', 'migrations', 'roles', 'queues', 'partitions',
 ] as const
 
 export type CheckName = (typeof CHECK_NAMES)[number]
@@ -22,13 +22,15 @@ export const CHECK_META: Record<CheckName, { number: number; emoji: string; labe
   'extensions':      { number: 12, emoji: '🧩',  label: 'Postgres Extensions' },
   'migrations':      { number: 13, emoji: '📋',  label: 'Migration History' },
   'roles':           { number: 14, emoji: '👤',  label: 'Postgres Roles & Grants' },
+  'queues':          { number: 15, emoji: '📬',  label: 'Queues' },
+  'partitions':      { number: 16, emoji: '🗂️',  label: 'Partition Sets' },
 }
 
 /**
  * Whether a check compares the two environments, or reports on the target's
  * own posture regardless of what it is being compared against.
  *
- * Two of the fourteen are not comparisons:
+ * Two of them are not comparisons:
  *
  * - **rls-coverage** reads only the target, listing tables with RLS disabled.
  *   It reports the same tables whichever pair you diff.
@@ -57,6 +59,8 @@ export const CHECK_KIND: Record<CheckName, CheckKind> = {
   'extensions':      'comparison',
   'migrations':      'posture',
   'roles':           'comparison',
+  'queues':          'comparison',
+  'partitions':      'comparison',
 }
 
 /** Checks that compare source against target. */
@@ -107,6 +111,11 @@ export interface DriftIssue {
    * its SQL: a webhook is a trigger, and dropping a trigger usually isn't.
    */
   destructive?: string
+  /**
+   * What applying the fix does to a live database beyond what it changes —
+   * the locks it holds, a table rewrite, a full scan. See hazards.ts.
+   */
+  hazards?: Array<{ kind: string; on?: string; detail: string }>
 }
 
 export interface CheckResult {
@@ -130,6 +139,12 @@ export interface CheckResult {
    * the difference from the live progress line is explained.
    */
   folded?: Array<{ count: number; into: CheckName }>
+  /**
+   * What the check could not compare or decide, said beside its findings:
+   * objects of a kind it does not compare, a rename it would not guess. Not
+   * drift — nothing to apply — so neither counted nor scored.
+   */
+  notices?: string[]
   durationMs: number
 }
 

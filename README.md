@@ -26,7 +26,7 @@ Built by **[Akal](https://github.com/akalsoftware)**.
   - RLS policies and RLS coverage;
   - storage buckets and their policies;
   - auth config and Edge Functions;
-  - cron jobs, webhooks and Realtime;
+  - cron jobs, queues, webhooks and Realtime;
   - Vault, extensions, roles and grants;
   - reference data and migration history.
 - **Fixes, not just reports.** Fixes run in dependency order, in one

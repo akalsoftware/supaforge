@@ -219,6 +219,25 @@ describeE2E('convergence proof', () => {
     expect(residual).toMatch(/table public\.sales_2026: missing/)
   }, 300_000)
 
+  // A sample of the target's rows goes through the fixes on the copy. A
+  // generated column's values follow its expression, so a fix that changes
+  // the expression changes them, as it means to; the base columns must hold.
+  it('lets a generated column take its new expression, and still guards the rest', async () => {
+    const table = (expr: string) => `CREATE TABLE t (id int PRIMARY KEY, a int, g int GENERATED ALWAYS AS (${expr}) STORED);`
+    await h.applySql('source', table('a * 3'))
+    await h.applySql('target', table('a * 2') + ' INSERT INTO t (id, a) SELECT i, i FROM generate_series(1, 20) i;')
+    const regenerate = 'ALTER TABLE t DROP COLUMN g; ALTER TABLE t ADD COLUMN g int GENERATED ALWAYS AS (a * 3) STORED;'
+
+    const proof = await prove(regenerate)
+    expect(proof.data?.sampled).toContain('public.t')
+    expect(proof.data?.lost).toEqual([])
+    expect(proof.converged).toBe(true)
+
+    const clobbered = await prove(regenerate + ' UPDATE t SET a = a + 1;')
+    expect(clobbered.converged).toBe(false)
+    expect(clobbered.residual).toEqual(['rows lost in public.t: values changed in a'])
+  }, 300_000)
+
   it('reports a migration that fails to execute, rather than claiming drift', async () => {
     await expect(prove('CREATE TABLE ;')).rejects.toThrow()
   }, 300_000)

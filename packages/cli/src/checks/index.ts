@@ -13,6 +13,8 @@ import { VaultCheck } from './vault.js'
 import { ExtensionsCheck } from './extensions.js'
 import { MigrationsCheck } from './migrations.js'
 import { RolesCheck } from './roles.js'
+import { QueuesCheck } from './queues.js'
+import { PartitionsCheck } from './partitions.js'
 
 export interface RegistryOptions {
   /** Enable file-level drift detection in the storage check. */
@@ -35,6 +37,8 @@ export function createDefaultRegistry(options: RegistryOptions = {}): CheckRegis
   registry.register(new ExtensionsCheck())
   registry.register(new MigrationsCheck())
   registry.register(new RolesCheck())
+  registry.register(new QueuesCheck())
+  registry.register(new PartitionsCheck())
   return registry
 }
 
@@ -54,3 +58,5 @@ export { VaultCheck } from './vault.js'
 export { ExtensionsCheck } from './extensions.js'
 export { MigrationsCheck } from './migrations.js'
 export { RolesCheck } from './roles.js'
+export { QueuesCheck } from './queues.js'
+export { PartitionsCheck } from './partitions.js'

@@ -9,13 +9,16 @@ order, in one transaction, and can be proved on a throwaway copy before
 anything changes. With a single project, it snapshots, restores and clones it.
 
 - **The whole project.** It covers schema, RLS, storage, auth, Edge Functions,
-  cron, webhooks, Realtime, Vault, extensions, grants, reference data and
-  migration history.
+  cron, webhooks, Realtime, queues, partition sets, Vault, extensions, grants,
+  reference data and migration history.
 - **Safe by default.** Every write needs `--apply`, and anything that loses
   data or opens up access also needs `--allow-destructive`. A failed apply
   leaves the target exactly as it was.
+- **Production-aware.** Each fix says what it does to a live database: the
+  lock it holds and on which table, whether it may rewrite the table or scan
+  every row, whether it can't run in a transaction.
 - **Provable.** `--prove` rehearses the migration and refuses to apply one
-  that wouldn't reproduce the source.
+  that wouldn't reproduce the source or would lose rows.
 - **Anywhere.** It works with Supabase Cloud, self-hosted stacks, plain
   PostgreSQL targets, CI pipelines and AI agents (MCP).
 
@@ -63,6 +66,8 @@ Docker image needs nothing at all, and carries the PostgreSQL client tools
 | Storage | Buckets and their policies (objects are never copied) | API and SQL |
 | Auth config | Management API, or GoTrue on self-hosted | API (hosted) |
 | Cron jobs | `cron.job` | SQL |
+| Queues | Supabase Queues (`pgmq.meta`), created and dropped through pgmq | SQL |
+| Partition sets | pg_partman registrations (`part_config`), made with `create_parent` | SQL |
 | Webhooks | Triggers calling `supabase_functions.http_request` | SQL |
 | Realtime | Publications, and policies on `realtime.messages` | SQL |
 | Vault | Secret names and descriptions (values can't be read) | Command to run |
@@ -71,10 +76,17 @@ Docker image needs nothing at all, and carries the PostgreSQL client tools
 | Roles and grants | Custom roles, and grants on tables, views, sequences and functions, including `anon`, `authenticated`, `service_role` | SQL |
 
 The schema check covers tables, columns, keys, indexes, partitions, views,
-materialized views, functions, triggers, sequences, enums, composite types,
-domains, policies, extensions and comments. It runs in every schema except
-Supabase's own (`auth`, `storage`, and so on) and those in `ignoreSchemas`.
-Objects owned by an extension belong to it and aren't compared.
+materialized views, functions, aggregates, triggers, event triggers, rules,
+sequences, enums, composite and range types, domains, casts, extended
+statistics, text search configurations and dictionaries, foreign servers,
+user mappings and foreign tables, policies, default privileges, replica
+identity, statistics targets, extensions and comments. A renamed column,
+table or sequence is renamed, keeping its rows, rather than dropped and
+created again. It runs in every schema except Supabase's own (`auth`,
+`storage`, and so on) and those in `ignoreSchemas`. Objects owned by an
+extension belong to it and aren't compared. Objects of a kind it doesn't
+compare, such as operator classes, are named under the check so you can look
+at them by hand; they aren't counted as drift.
 
 A check that can't run, for example without API credentials, says so and why.
 It's never reported as a clean pass.
@@ -109,6 +121,7 @@ Useful `diff` flags:
 | `--only=<id,...>` | Apply only these findings (ids come from `--json`, globs allowed) |
 | `--dry-run` | Print the fixes in the order they'd run, run nothing |
 | `--prove` | Rehearse the fixes on a throwaway copy first |
+| `--source-dir <dir>` | Compare a directory of schema files (such as `supabase/schemas`) with the target instead of a source database |
 | `--allow-destructive` | Also apply drops and deletes |
 | `--apply-posture` | Also apply the target-only checks' fixes |
 | `--no-transaction` | Apply fix by fix, keeping what works |
@@ -129,11 +142,13 @@ Useful `diff` flags:
   is unchanged. A fix the target can't hold, because it needs an extension or
   a Supabase schema the target lacks, is skipped with the reason, and the rest
   still applies.
-- **`--prove`.** The fixes are replayed on a structure-only copy of the target,
-  made on the target's own server, the way the apply will run them. Nothing is
-  applied unless the result matches the source, and nothing is applied if the
-  proof can't run. Changes a copy can't hold, such as cron jobs (pg_cron lives
-  in one database per server), are listed as not proved.
+- **`--prove`.** The fixes are replayed on a copy of the target's structure,
+  made on the target's own server, the way the apply will run them, with a
+  sample of each table's rows. Nothing is applied unless the result matches
+  the source and the rows survive, and nothing is applied if the proof can't
+  run. It also names the tables the fixes rewrite. Changes a copy can't hold,
+  such as cron jobs (pg_cron lives in one database per server), are listed as
+  not proved.
 
 ```bash
 supaforge diff --dry-run                 # the plan, in order
@@ -260,6 +275,7 @@ supaforge migrate run --env=prod --apply
 | `SUPAFORGE_DBDIFF_MEMORY` | `1G` | Memory limit for `@dbdiff/cli` (`2G`, `-1` for none) |
 | `SUPAFORGE_CONNECT_TIMEOUT` | `15` | Seconds to wait for a connection |
 | `SUPAFORGE_CHECK_CONCURRENCY` | `4` | Checks run at once. Lower it behind a tight pooler |
+| `SUPAFORGE_PROVE_ROWS` | `1000` | Rows of each table `--prove` copies to check they survive; `0` checks structure only |
 | `SUPAFORGE_PG_BIN` | — | A directory of PostgreSQL client tools (`pg_dump`, `psql`), used ahead of `PATH` — for a server newer than the tools on `PATH` |
 
 ## Self-hosted Supabase

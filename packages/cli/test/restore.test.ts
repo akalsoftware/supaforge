@@ -474,3 +474,13 @@ describe('restore: recognising a migration with nothing in it', () => {
     expect(isCommentOnly('-- add the column\nALTER TABLE t ADD COLUMN c text;')).toBe(false)
   })
 })
+
+describe('restoreError', () => {
+  it('explains running out of locks, and the two ways round it', async () => {
+    const { restoreError } = await import('../src/restore.js')
+    const err = Object.assign(new Error('out of shared memory'), { code: '53200' })
+    expect(restoreError(err, true)).toMatch(/more locks than the server allows in one transaction.*max_locks_per_transaction.*--no-transaction/)
+    expect(restoreError(err, false)).toBe('out of shared memory')
+    expect(restoreError(new Error('syntax error'), true)).toBe('syntax error')
+  })
+})
