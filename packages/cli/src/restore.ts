@@ -307,7 +307,7 @@ export async function restoreFromSnapshot(options: RestoreOptions): Promise<Rest
     // has already been recorded, and adding a second entry for the same
     // failure would only make it harder to read.
     if (!(err instanceof RestoreAborted)) {
-      result.errors.push({ type: 'sql', label: 'Restore', error: errMsg(err) })
+      result.errors.push({ type: 'sql', label: 'Restore', error: restoreError(err, transactional) })
     }
   } finally {
     await client.end()
@@ -911,7 +911,7 @@ async function applyStatement(
       else result.incomplete = true
       return
     }
-    result.errors.push({ type: 'sql', label: summarizeStatement(sql), error: errMsg(err) })
+    result.errors.push({ type: 'sql', label: summarizeStatement(sql), error: restoreError(err, transactional) })
     // In a transaction, stop at the first real failure and let the rollback
     // handle it: everything after would only report the transaction aborted.
     if (transactional) throw new RestoreAborted()
@@ -1014,3 +1014,23 @@ END $$;`
 
 /** Thrown to unwind out of the layer loop once a transaction has aborted. */
 class RestoreAborted extends Error {}
+
+/**
+ * A restore's error, explained where the cause is the restore's size.
+ *
+ * In one transaction, every table, index and sequence created holds a lock
+ * until the commit, and the server keeps a fixed number of them
+ * (max_locks_per_transaction for each connection). A large project's
+ * restore ran out of them half way, rolled back, and said only "out of
+ * shared memory".
+ */
+export function restoreError(err: unknown, transactional: boolean): string {
+  const message = errMsg(err)
+  const code = (err as { code?: unknown } | null)?.code
+  if (code === '53200' && transactional) {
+    return `${message} — this restore holds more locks than the server allows in one transaction. `
+      + 'Raise max_locks_per_transaction on the target (it takes a restart), or re-run with --no-transaction '
+      + 'to commit as it goes, giving up rolling the whole restore back on a failure.'
+  }
+  return message
+}
