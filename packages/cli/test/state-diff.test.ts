@@ -92,4 +92,16 @@ describe('diffState', () => {
       'extension btree_gist: missing',
     ])
   })
+
+  it('names the column that owns an unexpected sequence', () => {
+    const seq = (name: string, owned_by: string | null) =>
+      ({ schema: 'public', name, type: 'integer', start: 1, increment: 1, min: 1, max: 9, cache: 1, cycle: false, owned_by })
+    const b = empty()
+    b.sequences = [seq('tasks_id_seq', 'tasks.id'), seq('free_seq', null)]
+
+    expect(diffState(empty(), b)).toEqual([
+      'sequence public.tasks_id_seq: unexpected (owned by tasks.id)',
+      'sequence public.free_seq: unexpected',
+    ])
+  })
 })

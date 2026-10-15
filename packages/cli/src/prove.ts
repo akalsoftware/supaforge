@@ -709,6 +709,11 @@ export function explainStructureFailure(
 /** `DROP <kind> [IF EXISTS] <name>` and `DROP COLUMN [IF EXISTS] <name>`, capturing the bare name. */
 const DROPPED_NAME = /\bDROP\s+(?:TABLE|VIEW|MATERIALIZED\s+VIEW|TYPE|DOMAIN|SEQUENCE|FUNCTION|PROCEDURE|INDEX|COLUMN|CONSTRAINT|POLICY|TRIGGER)\s+(?:IF\s+EXISTS\s+)?(?:(?:"[^"]+"|[\w$]+)\s*\.\s*)?("[^"]+"|[\w$]+)/gi
 
+/** `table.column` as written by format('%I.%I'), each part unquoted and lower-cased. */
+function identParts(qualified: string): string[] {
+  return [...qualified.matchAll(/"((?:[^"]|"")+)"|([^."]+)/g)].map(m => (m[1]?.replace(/""/g, '"') ?? m[2]).toLowerCase())
+}
+
 /** `CREATE [OR REPLACE] <kind> [IF NOT EXISTS] <name>`, capturing the bare name. */
 const CREATED_NAME = /\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:UNIQUE\s+)?(?:TABLE|VIEW|MATERIALIZED\s+VIEW|TYPE|DOMAIN|SEQUENCE|FUNCTION|PROCEDURE|INDEX|POLICY|TRIGGER|EXTENSION)\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:(?:"[^"]+"|[\w$]+)\s*\.\s*)?("[^"]+"|[\w$]+)/gi
 
@@ -742,10 +747,12 @@ export function residualHeldBack(
   const heldBack: string[] = []
   const unexplained: string[] = []
   for (const line of residual) {
-    const subject = /^[a-z ]+?\s([^\s:]+(?:\s[^\s:]+)?):\s*unexpected$/i.exec(line)?.[1]
+    const [, subject, owner] = /^[a-z ]+?\s([^\s:]+(?:\s[^\s:]+)?):\s*unexpected(?: \(owned by (.+)\))?$/i.exec(line) ?? []
     const name = subject?.split(/[.\s]/).pop()?.replace(/^"|"$/g, '').toLowerCase()
+    // A sequence a column owns goes with the column, or its table.
+    const owners = owner ? identParts(owner) : []
     const missing = /^(.*):\s*missing$/i.exec(line)?.[1].toLowerCase()
-    if (name && dropped.has(name)) heldBack.push(line)
+    if ((name && dropped.has(name)) || owners.some(o => dropped.has(o))) heldBack.push(line)
     else if (missing && created.some(n => missing.endsWith(` ${n}`) || missing.endsWith(`.${n}`))) heldBack.push(line)
     else unexplained.push(line)
   }

@@ -164,6 +164,23 @@ describe('residual the held-back fixes account for', () => {
     ])
   })
 
+  // A serial or identity column's sequence goes with its table, or with the
+  // column: a held-back drop of either leaves the sequence too.
+  it('counts the sequence a held-back table or column owns', () => {
+    const r = residualHeldBack([
+      'sequence public.legacy_id_seq: unexpected (owned by legacy.id)',
+      'sequence public.t_old_seq: unexpected (owned by t.old)',
+      'sequence public."Odd_n_seq": unexpected (owned by "Odd"."n")',
+      'sequence public.free_seq: unexpected',
+      'sequence public.kept_id_seq: unexpected (owned by kept.id)',
+    ], [...held, 'DROP TABLE IF EXISTS "Odd";'])
+    expect(r.heldBack).toHaveLength(3)
+    expect(r.unexplained).toEqual([
+      'sequence public.free_seq: unexpected',
+      'sequence public.kept_id_seq: unexpected (owned by kept.id)',
+    ])
+  })
+
   it('accounts for nothing when nothing is held back', () => {
     expect(residualHeldBack(['table public.legacy: unexpected'], []).unexplained).toHaveLength(1)
   })

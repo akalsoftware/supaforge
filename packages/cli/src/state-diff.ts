@@ -54,6 +54,8 @@ function compareKeyed<T>(
   after: T[] | null | undefined,
   keyOf: (item: T) => string,
   compare: (out: string[], subject: string, a: T, b: T) => void,
+  /** Said after `unexpected`, of an object only the second side has. */
+  note: (item: T) => string = () => '',
 ): void {
   const a = new Map((before ?? []).map(x => [keyOf(x), x]))
   const b = new Map((after ?? []).map(x => [keyOf(x), x]))
@@ -62,8 +64,8 @@ function compareKeyed<T>(
     if (!b.has(key)) out.push(`${kind} ${key}: missing`)
     else compare(out, `${kind} ${key}`, item, b.get(key) as T)
   }
-  for (const key of b.keys()) {
-    if (!a.has(key)) out.push(`${kind} ${key}: unexpected`)
+  for (const [key, item] of b) {
+    if (!a.has(key)) out.push(`${kind} ${key}: unexpected${note(item)}`)
   }
 }
 
@@ -150,7 +152,9 @@ export function diffState(before: SchemaState, after: SchemaState): string[] {
       for (const k of ['type', 'start', 'increment', 'min', 'max', 'cache', 'cycle', 'owned_by'] as const) {
         compareField(o, s, k.replace('_', ' '), a[k], b[k])
       }
-    })
+    },
+    // A serial or identity column's: it goes with its table.
+    q => q.owned_by ? ` (owned by ${q.owned_by})` : '')
 
   compareKeyed(out, 'routine', before.routines, after.routines,
     r => `${qualify(r.schema, r.name)}(${r.arguments})`,
