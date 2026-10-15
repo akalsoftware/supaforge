@@ -101,12 +101,14 @@ async function runCheck(
   sourceDbUrl: string,
 ): Promise<CheckResult> {
   const start = performance.now()
+  const notices: string[] = []
   try {
-    const issues = withHazards(await check.scan(ctx))
+    const issues = withHazards(await check.scan({ ...ctx, onNotice: n => notices.push(n) }))
     return {
       check: name,
       status: issues.length > 0 ? 'drifted' : 'clean',
       issues,
+      ...(notices.length > 0 ? { notices } : {}),
       durationMs: Math.round(performance.now() - start),
     }
   } catch (err) {

@@ -585,27 +585,26 @@ export function sqlToIssues(
   ignoredSchemaTables?: Set<string>,
 ): DriftIssue[] {
   const issues = unfoldedIssues(result, check, ignoreSchemas, ignoredSchemaTables)
-  return check === 'schema'
-    ? [...foldCommentsIntoCreates(issues), ...noticeIssues(result.notices ?? [])]
-    : issues
+  return check === 'schema' ? foldCommentsIntoCreates(issues) : issues
 }
 
+/** Kinds dbdiff does not compare that another check does: publications, the Realtime check. */
+const COMPARED_ELSEWHERE = /^Publication objects are not compared/
+
 /**
- * A dbdiff warning as a finding of its own, with nothing to apply: what was
- * not compared, or not taken for a rename, is worth knowing before an apply
- * rather than finding out after.
+ * dbdiff's warnings, as said beside the schema check's findings: what it
+ * did not compare, or would not take for a rename, is worth knowing before
+ * an apply rather than after. `Operator objects are not compared (…) — check
+ * them by hand` reads `Not compared: Operator (…) — check them by hand.`
  */
-function noticeIssues(notices: string[]): DriftIssue[] {
-  return notices.map((notice, i) => {
-    const [what, advice] = notice.split(' — ')
-    return {
-      id: `schema-notice-${i + 1}`,
-      check: 'schema' as const,
-      severity: 'info' as const,
-      title: /not compared/.test(what) ? `Not compared: ${what.replace(/ objects are not compared/, '')}` : what,
-      description: advice ? `${what} — ${advice}.` : `${what}.`,
-    }
-  })
+export function schemaNotices(notices: string[]): string[] {
+  return notices
+    .filter(n => !COMPARED_ELSEWHERE.test(n))
+    .map(notice => {
+      const [what, advice] = notice.split(' — ')
+      const title = /not compared/.test(what) ? `Not compared: ${what.replace(/ objects are not compared/, '')}` : what
+      return advice ? `${title} — ${advice}.` : `${title}.`
+    })
 }
 
 /** What a comment title names: `public.orders.total (column)` → the name and kind. */

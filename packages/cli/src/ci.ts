@@ -123,6 +123,8 @@ export function formatCiSummary(result: ScanResult): {
   skipped: Array<{ check: string; reason: string }>
   /** How many checks compared the two environments, over how many were attempted. */
   coverage: { compared: number; total: number }
+  /** What a check could not compare, said beside its findings — see CheckResult.notices. */
+  notices: Array<{ check: string; notice: string }>
   criticalIssues: Array<{ check: string; id: string; title: string }>
   warningIssues: Array<{ check: string; id: string; title: string }>
 } {
@@ -130,6 +132,7 @@ export function formatCiSummary(result: ScanResult): {
   const warningIssues:  Array<{ check: string; id: string; title: string }> = []
   const errors: Array<{ check: string; message: string }> = []
   const skipped: Array<{ check: string; reason: string }> = []
+  const notices: Array<{ check: string; notice: string }> = []
 
   for (const check of result.checks ?? []) {
     if (check?.status === 'error') {
@@ -138,6 +141,7 @@ export function formatCiSummary(result: ScanResult): {
     if (check?.status === 'skipped') {
       skipped.push({ check: check.check, reason: check.skipReason ?? 'no reason given' })
     }
+    for (const notice of check?.notices ?? []) notices.push({ check: check.check, notice })
     for (const issue of check?.issues ?? []) {
       const entry = { check: check.check, id: issue.id, title: issue.title }
       if (issue.severity === 'critical') {
@@ -156,6 +160,7 @@ export function formatCiSummary(result: ScanResult): {
     errors,
     skipped,
     coverage: coverage(result),
+    notices,
     criticalIssues,
     warningIssues,
   }

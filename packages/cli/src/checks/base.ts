@@ -18,6 +18,8 @@ export interface CheckContext {
    * fine-grained to report simply ignore it.
    */
   onDetail?: (detail: string) => void
+  /** Sink for what the check could not compare — see CheckResult.notices. */
+  onNotice?: (notice: string) => void
   source: EnvironmentConfig
   target: EnvironmentConfig
   config: SupaForgeConfig

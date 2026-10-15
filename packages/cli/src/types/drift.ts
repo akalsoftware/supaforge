@@ -139,6 +139,12 @@ export interface CheckResult {
    * the difference from the live progress line is explained.
    */
   folded?: Array<{ count: number; into: CheckName }>
+  /**
+   * What the check could not compare or decide, said beside its findings:
+   * objects of a kind it does not compare, a rename it would not guess. Not
+   * drift — nothing to apply — so neither counted nor scored.
+   */
+  notices?: string[]
   durationMs: number
 }
 

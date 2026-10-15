@@ -143,6 +143,7 @@ export function renderSummary(result: ScanResult): string {
 
   for (const lr of result.checks) {
     lines.push(formatCheckLine(lr))
+    for (const notice of lr.notices ?? []) lines.push(`      ${dim(`ⓘ ${notice}`)}`)
   }
 
   lines.push('')

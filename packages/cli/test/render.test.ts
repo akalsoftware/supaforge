@@ -77,6 +77,17 @@ describe('renderSummary', () => {
   })
 })
 
+describe('notices', () => {
+  it('are said under their layer, and the headline still reads clean', () => {
+    const out = renderSummary({
+      ...cleanResult,
+      checks: [{ check: 'schema', status: 'clean', issues: [], notices: ['Not compared: Operator (source 1, target 0: ===) — check them by hand.'], durationMs: 5 }],
+    })
+    expect(out).toMatch(/Layer 1 \(Schema\):\s+0 issues\n\s+ⓘ Not compared: Operator \(source 1, target 0: ===\) — check them by hand\./)
+    expect(out).toMatch(/No drift detected/i)
+  })
+})
+
 describe('renderDetailed', () => {
   it('includes SQL fixes', () => {
     const output = renderDetailed(driftedResult)

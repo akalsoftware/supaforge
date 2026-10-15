@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { pairUnits, parseUnits } from '../src/dbdiff-units.js'
-import { buildDbDiffArgs, dbdiffNotices, destructiveReason, sqlToIssues } from '../src/dbdiff.js'
+import { buildDbDiffArgs, dbdiffNotices, destructiveReason, sqlToIssues, schemaNotices } from '../src/dbdiff.js'
 
 /** A section as `dbdiff --units` writes it. */
 function units(...parts: Array<[kind: string, object: string, sql: string]>): string {
@@ -297,14 +297,25 @@ describe('sqlToIssues: kinds dbdiff learned to compare, and renames', () => {
     ])
   })
 
-  it('turns dbdiff warnings into findings with nothing to apply', () => {
+  it('leaves dbdiff warnings out of the findings: they are not drift', () => {
     const issues = sqlToIssues({
       up: '', down: '',
       notices: ['Operator objects are not compared (source 1, target 0: ===) — check them by hand'],
     }, 'schema')
-    expect(issues).toHaveLength(1)
-    expect(issues[0]).toMatchObject({ severity: 'info', title: 'Not compared: Operator (source 1, target 0: ===)' })
-    expect(issues[0].sql).toBeUndefined()
+    expect(issues).toEqual([])
+  })
+})
+
+describe('schemaNotices', () => {
+  it('says what dbdiff did not compare, and leaves out what the Realtime check does', () => {
+    expect(schemaNotices([
+      'Operator objects are not compared (source 1, target 0: ===) — check them by hand',
+      'Publication objects are not compared (source 1, target 1: supabase_realtime) — check them by hand',
+      'public.a.b → c not taken for a rename',
+    ])).toEqual([
+      'Not compared: Operator (source 1, target 0: ===) — check them by hand.',
+      'public.a.b → c not taken for a rename.',
+    ])
   })
 })
 

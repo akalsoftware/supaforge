@@ -76,10 +76,17 @@ Docker image needs nothing at all, and carries the PostgreSQL client tools
 | Roles and grants | Custom roles, and grants on tables, views, sequences and functions, including `anon`, `authenticated`, `service_role` | SQL |
 
 The schema check covers tables, columns, keys, indexes, partitions, views,
-materialized views, functions, triggers, sequences, enums, composite types,
-domains, policies, extensions and comments. It runs in every schema except
-Supabase's own (`auth`, `storage`, and so on) and those in `ignoreSchemas`.
-Objects owned by an extension belong to it and aren't compared.
+materialized views, functions, aggregates, triggers, event triggers, rules,
+sequences, enums, composite and range types, domains, casts, extended
+statistics, text search configurations and dictionaries, foreign servers,
+user mappings and foreign tables, policies, default privileges, replica
+identity, statistics targets, extensions and comments. A renamed column,
+table or sequence is renamed, keeping its rows, rather than dropped and
+created again. It runs in every schema except Supabase's own (`auth`,
+`storage`, and so on) and those in `ignoreSchemas`. Objects owned by an
+extension belong to it and aren't compared. Objects of a kind it doesn't
+compare, such as operator classes, are named under the check so you can look
+at them by hand; they aren't counted as drift.
 
 A check that can't run, for example without API credentials, says so and why.
 It's never reported as a clean pass.
