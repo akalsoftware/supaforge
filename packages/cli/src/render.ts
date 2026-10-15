@@ -242,6 +242,9 @@ function formatIssue(issue: DriftIssue): string {
   const lines: string[] = []
   lines.push(`  ${severityIcon(issue.severity)} ${colorSeverity(issue.severity)} ${bold(issue.title)}`)
   lines.push(`    ${dim(issue.description)}`)
+  for (const hazard of issue.hazards ?? []) {
+    lines.push(`    ${warn(hazard.kind === 'data-loss' ? '⛔' : '⏳')} ${warn(hazard.detail)}`)
+  }
 
   if (issue.sql) {
     lines.push('')

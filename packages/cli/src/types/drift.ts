@@ -111,6 +111,11 @@ export interface DriftIssue {
    * its SQL: a webhook is a trigger, and dropping a trigger usually isn't.
    */
   destructive?: string
+  /**
+   * What applying the fix does to a live database beyond what it changes —
+   * the locks it holds, a table rewrite, a full scan. See hazards.ts.
+   */
+  hazards?: Array<{ kind: string; on?: string; detail: string }>
 }
 
 export interface CheckResult {

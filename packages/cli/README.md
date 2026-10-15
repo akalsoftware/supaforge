@@ -14,6 +14,9 @@ anything changes. With a single project, it snapshots, restores and clones it.
 - **Safe by default.** Every write needs `--apply`, and anything that loses
   data or opens up access also needs `--allow-destructive`. A failed apply
   leaves the target exactly as it was.
+- **Production-aware.** Each fix says what it does to a live database: the
+  lock it holds and on which table, whether it may rewrite the table or scan
+  every row, whether it can't run in a transaction.
 - **Provable.** `--prove` rehearses the migration and refuses to apply one
   that wouldn't reproduce the source.
 - **Anywhere.** It works with Supabase Cloud, self-hosted stacks, plain
