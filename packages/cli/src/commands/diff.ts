@@ -466,6 +466,15 @@ export default class Diff extends BaseCommand {
             this.log(`  ${ok('Converged')} — the migration reproduces the source exactly.\n`)
           }
         }
+        if (proof.data && !proof.skipped) {
+          const { sampled, unchecked, rewritten } = proof.data
+          if (sampled.length > 0) this.log(`  ${ok('Rows kept')} in the ${sampled.length} table(s) sampled.`)
+          if (rewritten.length > 0) {
+            this.log(`  ${warn('Rewritten')} on the copy — a long lock on the real target: ${rewritten.join(', ')}`)
+          }
+          if (unchecked.length > 0) this.log(`  ${dim(`Rows not checked (the sample would not load): ${unchecked.join(', ')}`)}`)
+          this.log('')
+        }
       }
 
       const result = await promote({

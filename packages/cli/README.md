@@ -18,7 +18,7 @@ anything changes. With a single project, it snapshots, restores and clones it.
   lock it holds and on which table, whether it may rewrite the table or scan
   every row, whether it can't run in a transaction.
 - **Provable.** `--prove` rehearses the migration and refuses to apply one
-  that wouldn't reproduce the source.
+  that wouldn't reproduce the source or would lose rows.
 - **Anywhere.** It works with Supabase Cloud, self-hosted stacks, plain
   PostgreSQL targets, CI pipelines and AI agents (MCP).
 
@@ -134,11 +134,13 @@ Useful `diff` flags:
   is unchanged. A fix the target can't hold, because it needs an extension or
   a Supabase schema the target lacks, is skipped with the reason, and the rest
   still applies.
-- **`--prove`.** The fixes are replayed on a structure-only copy of the target,
-  made on the target's own server, the way the apply will run them. Nothing is
-  applied unless the result matches the source, and nothing is applied if the
-  proof can't run. Changes a copy can't hold, such as cron jobs (pg_cron lives
-  in one database per server), are listed as not proved.
+- **`--prove`.** The fixes are replayed on a copy of the target's structure,
+  made on the target's own server, the way the apply will run them, with a
+  sample of each table's rows. Nothing is applied unless the result matches
+  the source and the rows survive, and nothing is applied if the proof can't
+  run. It also names the tables the fixes rewrite. Changes a copy can't hold,
+  such as cron jobs (pg_cron lives in one database per server), are listed as
+  not proved.
 
 ```bash
 supaforge diff --dry-run                 # the plan, in order
@@ -265,6 +267,7 @@ supaforge migrate run --env=prod --apply
 | `SUPAFORGE_DBDIFF_MEMORY` | `1G` | Memory limit for `@dbdiff/cli` (`2G`, `-1` for none) |
 | `SUPAFORGE_CONNECT_TIMEOUT` | `15` | Seconds to wait for a connection |
 | `SUPAFORGE_CHECK_CONCURRENCY` | `4` | Checks run at once. Lower it behind a tight pooler |
+| `SUPAFORGE_PROVE_ROWS` | `1000` | Rows of each table `--prove` copies to check they survive; `0` checks structure only |
 | `SUPAFORGE_PG_BIN` | — | A directory of PostgreSQL client tools (`pg_dump`, `psql`), used ahead of `PATH` — for a server newer than the tools on `PATH` |
 
 ## Self-hosted Supabase

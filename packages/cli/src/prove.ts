@@ -34,6 +34,7 @@ import { splitSqlStatements, isCommentOnly } from './utils/sql-split.js'
 import { quoteName } from './utils/sql.js'
 import { globToRegExp } from './utils/strings.js'
 import { join, dirname } from 'node:path'
+import { compareTables, sampleInto, sampleRows, snapshotTables, type DataProof } from './prove-data.js'
 
 const exec = promisify(execFile)
 
@@ -87,6 +88,11 @@ export interface ProofResult {
    * outsideTheRun(). They do not count against convergence.
    */
   outOfScope?: string[]
+  /**
+   * What became of a sample of the target's rows — see prove-data.ts. A
+   * kept table that lost rows fails the proof.
+   */
+  data?: DataProof
 }
 
 /** Replace the database name in a libpq URL, keeping everything else. */
@@ -278,6 +284,11 @@ export async function proveConvergence(opts: {
     const scoped = opts.checks !== undefined && !opts.checks.includes('schema')
     const before = scoped ? await schemaState(cloneUrl, schemas) : undefined
 
+    // A sample of the target's rows, to see that they survive.
+    const limit = sampleRows()
+    const sample = limit > 0 ? await sampleInto(psql, opts.targetUrl, cloneUrl, schemas, limit) : undefined
+    const tablesBefore = sample ? await snapshotTables(cloneUrl, schemas) : undefined
+
     // The migration under test.
     let notApplied: ProofResult['notApplied']
     if (opts.fixes) {
@@ -297,7 +308,17 @@ export async function proveConvergence(opts: {
     } else {
       await runSql(psql, cloneUrl, opts.migrationSql)
     }
-    const reported = (r: ProofResult): ProofResult => (notApplied?.length ? { ...r, notApplied } : r)
+    let data: DataProof | undefined
+    if (sample && tablesBefore) {
+      data = { ...sample, ...compareTables(tablesBefore, await snapshotTables(cloneUrl, schemas), sample.sampled, opts.migrationSql) }
+      if (data.lost.length > 0) {
+        return { converged: false, cloneName, data, residual: data.lost.map(l => `rows lost in ${l}`) }
+      }
+    }
+    const reported = (r: ProofResult): ProofResult => {
+      const withData = data ? { ...r, data } : r
+      return notApplied?.length ? { ...withData, notApplied } : withData
+    }
 
     const [want, got] = await Promise.all([
       fingerprint(opts.sourceUrl, schemas),
