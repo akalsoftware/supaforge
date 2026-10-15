@@ -1,6 +1,6 @@
 export const CHECK_NAMES = [
   'schema', 'rls', 'rls-coverage', 'edge-functions', 'storage', 'auth', 'cron', 'data',
-  'webhooks', 'realtime', 'vault', 'extensions', 'migrations', 'roles', 'queues',
+  'webhooks', 'realtime', 'vault', 'extensions', 'migrations', 'roles', 'queues', 'partitions',
 ] as const
 
 export type CheckName = (typeof CHECK_NAMES)[number]
@@ -23,6 +23,7 @@ export const CHECK_META: Record<CheckName, { number: number; emoji: string; labe
   'migrations':      { number: 13, emoji: '📋',  label: 'Migration History' },
   'roles':           { number: 14, emoji: '👤',  label: 'Postgres Roles & Grants' },
   'queues':          { number: 15, emoji: '📬',  label: 'Queues' },
+  'partitions':      { number: 16, emoji: '🗂️',  label: 'Partition Sets' },
 }
 
 /**
@@ -59,6 +60,7 @@ export const CHECK_KIND: Record<CheckName, CheckKind> = {
   'migrations':      'posture',
   'roles':           'comparison',
   'queues':          'comparison',
+  'partitions':      'comparison',
 }
 
 /** Checks that compare source against target. */
