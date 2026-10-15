@@ -45,6 +45,21 @@ export interface DbDiffOptions {
 export interface DbDiffResult {
   up: string
   down: string
+  /**
+   * What dbdiff warned about without changing anything: kinds of object it
+   * does not compare, columns or tables it would not take for renames.
+   */
+  notices?: string[]
+}
+
+/** dbdiff's warnings (`⚠ ...` lines), colour codes stripped. */
+export function dbdiffNotices(stdout: string): string[] {
+  return stdout
+    .replace(/\u001b\[[0-9;]*m/g, '')
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line.startsWith('⚠'))
+    .map(line => line.replace(/^⚠\s*/, ''))
 }
 
 /**
@@ -285,16 +300,17 @@ export async function runDbDiff(options: DbDiffOptions): Promise<DbDiffResult> {
     // so timeout, maxBuffer and every error path stay exactly as they were.
     attachProgress(running, options.onProgress)
 
-    await running
+    const { stdout } = await running
+    const notices = dbdiffNotices(String(stdout ?? ''))
 
     // When schemas are identical, dbdiff exits 0 but doesn't write the file
     const fileExists = await access(outputFile).then(() => true, () => false)
     if (!fileExists) {
-      return { up: '', down: '' }
+      return { up: '', down: '', notices }
     }
 
     const output = await readFile(outputFile, 'utf8')
-    return parseDbDiffOutput(output)
+    return { ...parseDbDiffOutput(output), notices }
   } catch (err: unknown) {
     const errObj = (err ?? {}) as Record<string, unknown>
     const message = errMsg(err)
@@ -564,7 +580,27 @@ export function sqlToIssues(
   ignoredSchemaTables?: Set<string>,
 ): DriftIssue[] {
   const issues = unfoldedIssues(result, check, ignoreSchemas, ignoredSchemaTables)
-  return check === 'schema' ? foldCommentsIntoCreates(issues) : issues
+  return check === 'schema'
+    ? [...foldCommentsIntoCreates(issues), ...noticeIssues(result.notices ?? [])]
+    : issues
+}
+
+/**
+ * A dbdiff warning as a finding of its own, with nothing to apply: what was
+ * not compared, or not taken for a rename, is worth knowing before an apply
+ * rather than finding out after.
+ */
+function noticeIssues(notices: string[]): DriftIssue[] {
+  return notices.map((notice, i) => {
+    const [what, advice] = notice.split(' — ')
+    return {
+      id: `schema-notice-${i + 1}`,
+      check: 'schema' as const,
+      severity: 'info' as const,
+      title: /not compared/.test(what) ? `Not compared: ${what.replace(/ objects are not compared/, '')}` : what,
+      description: advice ? `${what} — ${advice}.` : `${what}.`,
+    }
+  })
 }
 
 /** What a comment title names: `public.orders.total (column)` → the name and kind. */
@@ -758,6 +794,19 @@ function issuesFromUnits(
       }
     }
 
+    const modified = modifiedTitle(up, statements)
+    if (modified) {
+      return {
+        id: `${check}-alter-${up.kind.replace(/^Alter/, '').toLowerCase()}-${i + 1}`,
+        check,
+        severity: 'warning' as const,
+        title: modified,
+        description: 'Definition differs between source and target.',
+        sql: { up: upSql, down: downSql },
+        ...manual,
+      }
+    }
+
     const lead = leadStatement(up, statements)
     const type = classifyStatement(lead)
     return {
@@ -844,6 +893,36 @@ function replacedView(unit: DbDiffUnit, statements: string[]): { kind: Replaceab
 
 /** A name without its schema or quotes, for matching one to dbdiff's unit object. */
 const bareName = (name: string) => name.slice(name.lastIndexOf('.') + 1).replace(/"/g, '').toLowerCase()
+
+/** Changed objects dbdiff replaces, or changes where they stand, by unit kind. */
+const MODIFIED_KINDS: Record<string, string> = {
+  AlterRangeType: 'Type modified',
+  AlterAggregate: 'Aggregate modified',
+  AlterRule: 'Rule modified',
+  AlterStatistics: 'Statistics modified',
+  AlterEventTrigger: 'Event trigger modified',
+  AlterCast: 'Cast modified',
+  AlterTextSearchConfiguration: 'Text search configuration modified',
+  AlterTextSearchDictionary: 'Text search dictionary modified',
+  AlterForeignServer: 'Foreign server modified',
+  AlterUserMapping: 'User mapping modified',
+  AlterForeignTable: 'Foreign table modified',
+  AlterDefaultPrivileges: 'Default privileges differ',
+}
+
+/**
+ * "<Kind> modified: <name>" for a changed object of the kinds above, named
+ * from the statement that makes it — its DROP would read as the object
+ * being removed.
+ */
+function modifiedTitle(unit: DbDiffUnit, statements: string[]): string | undefined {
+  const label = MODIFIED_KINDS[unit.kind]
+  if (!label) return undefined
+  const making = statements.find(sql => !/^\s*DROP\b/i.test(sql)) ?? statements[0]
+  const summary = making ? summariseStatement(making, 'schema') : ''
+  const name = summary.slice(summary.indexOf(': ') + 2)
+  return `${label}: ${name || unit.object}`
+}
 
 /**
  * The statement a unit is named by: for a table change, its first ALTER
@@ -1358,6 +1437,8 @@ interface SummaryRule {
   match: RegExp
   label: string
   name: (sql: string, downSql?: string) => string
+  /** The name is not a schema object's — a role's privileges, a cast — so no schema is added. */
+  unqualified?: boolean
 }
 
 /** Head patterns for the identifier that follows each keyword. */
@@ -1371,11 +1452,57 @@ const AFTER = {
   index: /\bINDEX\s+(?:CONCURRENTLY\s+)?(?:IF\s+(?:NOT\s+)?EXISTS\s+)?/i,
   policy: /\bPOLICY\s+(?:IF\s+EXISTS\s+)?/i,
   collation: /\bCOLLATION\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?/i,
+  eventTrigger: /\bEVENT\s+TRIGGER\s+(?:IF\s+EXISTS\s+)?/i,
+  aggregate: /\bAGGREGATE\s+(?:IF\s+EXISTS\s+)?/i,
+  statistics: /\bSTATISTICS\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?/i,
+  textSearch: /\bTEXT\s+SEARCH\s+(?:CONFIGURATION|DICTIONARY)\s+(?:IF\s+EXISTS\s+)?/i,
+  server: /\bSERVER\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?/i,
+  foreignTable: /\bFOREIGN\s+TABLE\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?/i,
   on: /\bON\s+(?:ONLY\s+)?/i,
 }
 
 /** Name an object by the identifier following `head`. */
 const named = (head: RegExp) => (sql: string) => extractQualifiedName(sql, head)
+
+/**
+ * `public.people.name → full_name`, `public.clients → customers`: what a
+ * rename statement renames, and to what.
+ */
+function renameLabel(sql: string): string {
+  const table = extractQualifiedName(sql, /\b(?:TABLE|INDEX)\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?/i)
+  const to = /\bTO\s+("(?:[^"]|"")*"|[\w$]+)\s*;?\s*$/i.exec(sql.trim())?.[1]
+  const from = /\bRENAME\s+(?:COLUMN|CONSTRAINT)\s+("(?:[^"]|"")*"|[\w$]+)/i.exec(sql)?.[1]
+  return `${qualifySchemaName(table)}${from ? '.' + unquoted(from) : ''} → ${to ? unquoted(to) : UNKNOWN_NAME}`
+}
+
+/** `role in schema on tables` for an ALTER DEFAULT PRIVILEGES. */
+function defaultPrivilegesLabel(sql: string): string {
+  const role = /\bFOR\s+ROLE\s+("(?:[^"]|"")*"|\S+)/i.exec(sql)?.[1]
+  const schema = /\bIN\s+SCHEMA\s+("(?:[^"]|"")*"|\S+)/i.exec(sql)?.[1]
+  const kind = /\bON\s+(TABLES|SEQUENCES|FUNCTIONS|ROUTINES|TYPES|SCHEMAS)\b/i.exec(sql)?.[1]
+  return [role && unquoted(role), schema ? `in ${unquoted(schema)}` : 'in every schema', kind && `on ${kind.toLowerCase()}`]
+    .filter(Boolean).join(' ')
+}
+
+/** `table.rule` for a rule statement. */
+function ruleLabel(sql: string): string {
+  const rule = extractQualifiedName(sql, /\bRULE\s+(?:IF\s+EXISTS\s+)?/i)
+  const table = /\bTO\s+((?:"(?:[^"]|"")*"|[\w$]+)(?:\.(?:"(?:[^"]|"")*"|[\w$]+))?)/i.exec(sql)?.[1]
+    ?? /\bON\s+((?:"(?:[^"]|"")*"|[\w$]+)(?:\.(?:"(?:[^"]|"")*"|[\w$]+))?)/i.exec(sql)?.[1]
+  return table ? `${unquoted(table.split('.').pop() ?? table)}.${rule.split('.').pop()}` : rule
+}
+
+/** `(a AS b)` for a cast statement. */
+function castLabel(sql: string): string {
+  return /\(([^()]+?\s+AS\s+[^()]+?)\)/i.exec(sql)?.[1] ?? UNKNOWN_NAME
+}
+
+/** `user@server` for a user mapping statement. */
+function userMappingLabel(sql: string): string {
+  const user = /\bFOR\s+("(?:[^"]|"")*"|\S+)/i.exec(sql)?.[1] ?? 'unknown'
+  const server = /\bSERVER\s+("(?:[^"]|"")*"|[^\s;]+)/i.exec(sql)?.[1] ?? 'unknown'
+  return `${unquoted(user)}@${unquoted(server)}`
+}
 
 /**
  * `table.policy` for a policy statement.
@@ -1488,6 +1615,10 @@ const SCHEMA_RULES: SummaryRule[] = [
   { match: /^\s*ALTER\s+DOMAIN\b/i, label: 'Domain altered', name: named(AFTER.domain) },
   { match: /^\s*DROP\s+DOMAIN\b/i, label: 'Extra domain', name: named(AFTER.domain) },
 
+  { match: /^\s*ALTER\s+TABLE\b[^;]*\bRENAME\s+COLUMN\b/is, label: 'Column renamed', name: renameLabel, unqualified: true },
+  { match: /^\s*ALTER\s+TABLE\b[^;]*\bRENAME\s+CONSTRAINT\b/is, label: 'Constraint renamed', name: renameLabel, unqualified: true },
+  { match: /^\s*ALTER\s+TABLE\b[^;]*\bRENAME\s+TO\b/is, label: 'Table renamed', name: renameLabel, unqualified: true },
+  { match: /^\s*ALTER\s+INDEX\b[^;]*\bRENAME\s+TO\b/is, label: 'Index renamed', name: renameLabel, unqualified: true },
   { match: /^\s*ALTER\s+TABLE\b/i, label: 'Table altered', name: named(AFTER.table) },
   { match: /^\s*CREATE\s+TABLE\b/i, label: 'Table missing', name: named(AFTER.table) },
   { match: /^\s*DROP\s+TABLE\b/i, label: 'Extra table', name: named(AFTER.table) },
@@ -1513,6 +1644,29 @@ const SCHEMA_RULES: SummaryRule[] = [
   { match: /^\s*CREATE\s+COLLATION\b/i, label: 'Collation missing', name: named(AFTER.collation) },
   { match: /^\s*ALTER\s+COLLATION\b/i, label: 'Collation altered', name: named(AFTER.collation) },
   { match: /^\s*DROP\s+COLLATION\b/i, label: 'Extra collation', name: named(AFTER.collation) },
+
+  { match: /^\s*ALTER\s+DEFAULT\s+PRIVILEGES\b/i, label: 'Default privileges differ', name: defaultPrivilegesLabel, unqualified: true },
+  { match: /^\s*CREATE\s+EVENT\s+TRIGGER\b/i, label: 'Event trigger missing', name: named(AFTER.eventTrigger) },
+  { match: /^\s*DROP\s+EVENT\s+TRIGGER\b/i, label: 'Extra event trigger', name: named(AFTER.eventTrigger) },
+  { match: /^\s*CREATE\s+(?:OR\s+REPLACE\s+)?RULE\b/i, label: 'Rule missing', name: ruleLabel },
+  { match: /^\s*DROP\s+RULE\b/i, label: 'Extra rule', name: ruleLabel },
+  { match: /^\s*CREATE\s+(?:OR\s+REPLACE\s+)?AGGREGATE\b/i, label: 'Aggregate missing', name: named(AFTER.aggregate) },
+  { match: /^\s*DROP\s+AGGREGATE\b/i, label: 'Extra aggregate', name: named(AFTER.aggregate) },
+  { match: /^\s*CREATE\s+STATISTICS\b/i, label: 'Statistics missing', name: named(AFTER.statistics) },
+  { match: /^\s*DROP\s+STATISTICS\b/i, label: 'Extra statistics', name: named(AFTER.statistics) },
+  { match: /^\s*(?:CREATE|ALTER)\s+TEXT\s+SEARCH\s+CONFIGURATION\b/i, label: 'Text search configuration missing', name: named(AFTER.textSearch) },
+  { match: /^\s*DROP\s+TEXT\s+SEARCH\s+CONFIGURATION\b/i, label: 'Extra text search configuration', name: named(AFTER.textSearch) },
+  { match: /^\s*CREATE\s+TEXT\s+SEARCH\s+DICTIONARY\b/i, label: 'Text search dictionary missing', name: named(AFTER.textSearch) },
+  { match: /^\s*DROP\s+TEXT\s+SEARCH\s+DICTIONARY\b/i, label: 'Extra text search dictionary', name: named(AFTER.textSearch) },
+  { match: /^\s*CREATE\s+CAST\b/i, label: 'Cast missing', name: castLabel, unqualified: true },
+  { match: /^\s*DROP\s+CAST\b/i, label: 'Extra cast', name: castLabel, unqualified: true },
+  { match: /^\s*CREATE\s+SERVER\b/i, label: 'Foreign server missing', name: named(AFTER.server) },
+  { match: /^\s*ALTER\s+SERVER\b/i, label: 'Foreign server altered', name: named(AFTER.server) },
+  { match: /^\s*DROP\s+SERVER\b/i, label: 'Extra foreign server', name: named(AFTER.server) },
+  { match: /^\s*(?:CREATE|ALTER)\s+USER\s+MAPPING\b/i, label: 'User mapping missing', name: userMappingLabel, unqualified: true },
+  { match: /^\s*DROP\s+USER\s+MAPPING\b/i, label: 'Extra user mapping', name: userMappingLabel, unqualified: true },
+  { match: /^\s*CREATE\s+FOREIGN\s+TABLE\b/i, label: 'Foreign table missing', name: named(AFTER.foreignTable) },
+  { match: /^\s*DROP\s+FOREIGN\s+TABLE\b/i, label: 'Extra foreign table', name: named(AFTER.foreignTable) },
 
   { match: /^\s*CREATE\s+SEQUENCE\b/i, label: 'Sequence missing', name: named(AFTER.sequence) },
   { match: /^\s*ALTER\s+SEQUENCE\b/i, label: 'Sequence altered', name: named(AFTER.sequence) },
@@ -1592,7 +1746,8 @@ export function summariseStatement(sql: string, check: 'schema' | 'data', downSq
   for (const rule of SCHEMA_RULES) {
     if (rule.match.test(sql)) {
       const label = rule.name === commentLabel ? commentChange(sql, downSql) : rule.label
-      return `${label}: ${qualifySchemaName(rule.name(sql, downSql))}`
+      const name = rule.name(sql, downSql)
+      return `${label}: ${rule.unqualified ? name : qualifySchemaName(name)}`
     }
   }
 

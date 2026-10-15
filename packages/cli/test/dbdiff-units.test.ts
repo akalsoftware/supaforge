@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { pairUnits, parseUnits } from '../src/dbdiff-units.js'
-import { buildDbDiffArgs, destructiveReason, sqlToIssues } from '../src/dbdiff.js'
+import { buildDbDiffArgs, dbdiffNotices, destructiveReason, sqlToIssues } from '../src/dbdiff.js'
 
 /** A section as `dbdiff --units` writes it. */
 function units(...parts: Array<[kind: string, object: string, sql: string]>): string {
@@ -244,5 +244,73 @@ describe('statements after a comment', () => {
       'DROP TYPE IF EXISTS "st";',
       `CREATE TYPE "st" AS ENUM ('a');`,
     ])
+  })
+})
+
+describe('sqlToIssues: kinds dbdiff learned to compare, and renames', () => {
+  const titles = (...parts: Array<[string, string, string]>) =>
+    sqlToIssues({ up: units(...parts), down: '' }, 'schema').map(i => i.title)
+
+  it('names each kind', () => {
+    expect(titles(
+      ['CreateDefaultPrivileges', 'postgres.public.tables', 'ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT SELECT ON TABLES TO "anon";'],
+      ['CreateEventTrigger', 'audit', 'CREATE EVENT TRIGGER "audit" ON ddl_command_end EXECUTE FUNCTION audit_ddl();'],
+      ['CreateRule', 'orders.keep', 'CREATE RULE keep AS ON DELETE TO public.orders DO INSTEAD NOTHING;'],
+      ['DropRule', 'orders.old', 'DROP RULE IF EXISTS "old" ON "orders";'],
+      ['CreateAggregate', 'my_sum(integer)', 'CREATE AGGREGATE "my_sum"(integer) (SFUNC = add_int, STYPE = integer);'],
+      ['CreateStatistics', 'addr_stx', 'CREATE STATISTICS public.addr_stx (ndistinct) ON city, zip FROM addr;'],
+      ['CreateTextSearchConfiguration', 'my_cfg', 'CREATE TEXT SEARCH CONFIGURATION "my_cfg" (PARSER = pg_catalog."default");'],
+      ['CreateCast', 'flag AS boolean', 'CREATE CAST (flag AS boolean) WITH FUNCTION flag_to_bool(flag);'],
+      ['CreateForeignServer', 'warehouse', `CREATE SERVER "warehouse" FOREIGN DATA WRAPPER "postgres_fdw" OPTIONS ("host" 'db');`],
+      ['CreateUserMapping', 'reader@warehouse', `CREATE USER MAPPING FOR "reader" SERVER "warehouse" OPTIONS ("user" 'r');`],
+      ['CreateForeignTable', 'remote', 'CREATE FOREIGN TABLE "remote" (\n  "id" integer\n) SERVER "warehouse";'],
+    )).toEqual([
+      'Default privileges differ: postgres in public on tables',
+      'Event trigger missing: public.audit',
+      'Rule missing: orders.keep',
+      'Extra rule: orders.old',
+      'Aggregate missing: public.my_sum',
+      'Statistics missing: public.addr_stx',
+      'Text search configuration missing: public.my_cfg',
+      'Cast missing: flag AS boolean',
+      'Foreign server missing: public.warehouse',
+      'User mapping missing: reader@warehouse',
+      'Foreign table missing: public.remote',
+    ])
+  })
+
+  it('names renames by what they keep', () => {
+    expect(titles(
+      ['AlterTableRenameColumn', 'people.full_name', 'ALTER TABLE "people" RENAME COLUMN "name" TO "full_name";'],
+      ['AlterTableRename', 'customers', 'ALTER TABLE "clients" RENAME TO "customers";'],
+    )).toEqual(['Column renamed: public.people.name → full_name', 'Table renamed: public.clients → customers'])
+  })
+
+  it('names a changed object as modified, not by the DROP that replaces it', () => {
+    const issues = sqlToIssues({ up: units(
+      ['AlterAggregate', 'my_sum(integer)', 'DROP AGGREGATE IF EXISTS "my_sum"(integer);\nCREATE AGGREGATE "my_sum"(integer) (SFUNC = add_int, STYPE = integer);'],
+      ['AlterForeignServer', 'warehouse', `ALTER SERVER "warehouse" OPTIONS (DROP "host");\nALTER SERVER "warehouse" OPTIONS (ADD "host" 'db');`],
+    ), down: '' }, 'schema')
+    expect(issues.map(i => [i.title, i.severity])).toEqual([
+      ['Aggregate modified: public.my_sum', 'warning'],
+      ['Foreign server modified: public.warehouse', 'warning'],
+    ])
+  })
+
+  it('turns dbdiff warnings into findings with nothing to apply', () => {
+    const issues = sqlToIssues({
+      up: '', down: '',
+      notices: ['Operator objects are not compared (source 1, target 0: ===) — check them by hand'],
+    }, 'schema')
+    expect(issues).toHaveLength(1)
+    expect(issues[0]).toMatchObject({ severity: 'info', title: 'Not compared: Operator (source 1, target 0: ===)' })
+    expect(issues[0].sql).toBeUndefined()
+  })
+})
+
+describe('dbdiffNotices', () => {
+  it('reads the warnings out of dbdiff\'s output, colour and all', () => {
+    expect(dbdiffNotices('\u001b[0;36mℹ Now generating UP migration\u001b[0m\n\u001b[0;33m⚠ Operator objects are not compared (source 1, target 0: ===) — check them by hand\u001b[0m\nWritten: x.sql'))
+      .toEqual(['Operator objects are not compared (source 1, target 0: ===) — check them by hand'])
   })
 })
