@@ -9,8 +9,8 @@ order, in one transaction, and can be proved on a throwaway copy before
 anything changes. With a single project, it snapshots, restores and clones it.
 
 - **The whole project.** It covers schema, RLS, storage, auth, Edge Functions,
-  cron, webhooks, Realtime, Vault, extensions, grants, reference data and
-  migration history.
+  cron, webhooks, Realtime, queues, Vault, extensions, grants, reference data
+  and migration history.
 - **Safe by default.** Every write needs `--apply`, and anything that loses
   data or opens up access also needs `--allow-destructive`. A failed apply
   leaves the target exactly as it was.
@@ -63,6 +63,7 @@ Docker image needs nothing at all, and carries the PostgreSQL client tools
 | Storage | Buckets and their policies (objects are never copied) | API and SQL |
 | Auth config | Management API, or GoTrue on self-hosted | API (hosted) |
 | Cron jobs | `cron.job` | SQL |
+| Queues | Supabase Queues (`pgmq.meta`), created and dropped through pgmq | SQL |
 | Webhooks | Triggers calling `supabase_functions.http_request` | SQL |
 | Realtime | Publications, and policies on `realtime.messages` | SQL |
 | Vault | Secret names and descriptions (values can't be read) | Command to run |

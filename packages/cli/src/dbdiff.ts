@@ -424,6 +424,11 @@ export function destructiveReason(
   sql: string,
   recreatedElsewhere: ReadonlySet<string> = new Set(),
 ): string | undefined {
+  // A queue's messages are rows, and pgmq.drop_queue drops its tables. A
+  // function call, so neither reading below would see it as a DROP.
+  if (/\bPGMQ\s*\.\s*"?DROP_QUEUE"?\s*\(/.test(sqlSkeleton(sql).toUpperCase())) {
+    return 'drops a queue and the messages in it'
+  }
   const statements = parseStatements(sql)
   return statements
     ? destructiveInTree(statements, recreatedElsewhere)

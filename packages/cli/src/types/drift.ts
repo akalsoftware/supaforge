@@ -1,6 +1,6 @@
 export const CHECK_NAMES = [
   'schema', 'rls', 'rls-coverage', 'edge-functions', 'storage', 'auth', 'cron', 'data',
-  'webhooks', 'realtime', 'vault', 'extensions', 'migrations', 'roles',
+  'webhooks', 'realtime', 'vault', 'extensions', 'migrations', 'roles', 'queues',
 ] as const
 
 export type CheckName = (typeof CHECK_NAMES)[number]
@@ -22,13 +22,14 @@ export const CHECK_META: Record<CheckName, { number: number; emoji: string; labe
   'extensions':      { number: 12, emoji: '🧩',  label: 'Postgres Extensions' },
   'migrations':      { number: 13, emoji: '📋',  label: 'Migration History' },
   'roles':           { number: 14, emoji: '👤',  label: 'Postgres Roles & Grants' },
+  'queues':          { number: 15, emoji: '📬',  label: 'Queues' },
 }
 
 /**
  * Whether a check compares the two environments, or reports on the target's
  * own posture regardless of what it is being compared against.
  *
- * Two of the fourteen are not comparisons:
+ * Two of them are not comparisons:
  *
  * - **rls-coverage** reads only the target, listing tables with RLS disabled.
  *   It reports the same tables whichever pair you diff.
@@ -57,6 +58,7 @@ export const CHECK_KIND: Record<CheckName, CheckKind> = {
   'extensions':      'comparison',
   'migrations':      'posture',
   'roles':           'comparison',
+  'queues':          'comparison',
 }
 
 /** Checks that compare source against target. */
