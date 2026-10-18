@@ -657,7 +657,13 @@ function rolesOf({ kind, node }: Statement): string[] {
     (kind === 'GrantStmt' && node.is_grant) ? node.grantees ?? []
       : (kind === 'GrantRoleStmt' && node.is_grant) ? node.grantee_roles ?? []
         : (kind === 'CreatePolicyStmt' || kind === 'AlterPolicyStmt') ? node.roles ?? []
-          : []
+          // The roles whose new objects it is about (FOR ROLE), and those it grants to.
+          : kind === 'AlterDefaultPrivilegesStmt' ? [
+            ...((node.options ?? []) as Array<Record<string, any>>)
+              .filter(o => o.DefElem?.defname === 'roles').flatMap(o => o.DefElem.arg?.List?.items ?? []),
+            ...(node.action?.is_grant ? node.action.grantees ?? [] : []),
+          ]
+            : []
   return specs
     .map(spec => spec.RoleSpec)
     // PUBLIC, CURRENT_USER and the like are not role names.
