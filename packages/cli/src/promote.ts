@@ -607,7 +607,8 @@ export function unmetDependency(sql: string, err: unknown, olderTarget = false):
   if (olderTarget && OLDER_SERVER.has(code)) {
     return "the target's PostgreSQL is older than the source's and does not support it"
   }
-  if (/^\s*CREATE\s+EXTENSION\b/i.test(sqlSkeleton(sql))) {
+  // Anywhere in the fix: one into a schema of its own makes the schema first.
+  if (/(?:^|;)\s*CREATE\s+EXTENSION\b/i.test(sqlSkeleton(sql))) {
     return EXTENSION_UNAVAILABLE.has(code) ? 'this server does not ship it' : undefined
   }
   if (ABSENT_ON_TARGET.has(code) || code === UNDEFINED_COLUMN) {

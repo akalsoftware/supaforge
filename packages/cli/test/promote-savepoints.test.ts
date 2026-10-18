@@ -141,6 +141,9 @@ describe('unmetDependency', () => {
 
   it('accepts an extension the server does not ship, only for CREATE EXTENSION', () => {
     expect(unmetDependency('CREATE EXTENSION IF NOT EXISTS vector', err('0A000'))).toContain('does not ship')
+    // Into a schema of its own, which the fix makes first.
+    expect(unmetDependency('CREATE SCHEMA IF NOT EXISTS "graphql";\nCREATE EXTENSION IF NOT EXISTS "pg_graphql" SCHEMA "graphql";', err('0A000')))
+      .toContain('does not ship')
     expect(unmetDependency('CREATE EXTENSION vector', err('58P01'))).toContain('does not ship')
     // 0A000 is "feature not supported" in general: anywhere else it is a real failure.
     expect(unmetDependency('ALTER TABLE t ALTER COLUMN c TYPE int', err('0A000'))).toBeUndefined()
