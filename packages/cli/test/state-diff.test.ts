@@ -104,4 +104,20 @@ describe('diffState', () => {
       'sequence public.free_seq: unexpected',
     ])
   })
+
+  // A table renamed on PostgreSQL 18 keeps its NOT NULLs' old names; one made
+  // afresh, or on an older server, has others or none. Matched by column.
+  it('matches a NOT NULL constraint by its column, not its name', () => {
+    const nn = (name: string, column: string) =>
+      ({ name, type: 'not_null', definition: `NOT NULL ${column}`, validated: true, deferrable: false, deferred: false })
+    const a = empty(); a.tables = [table({ constraints: [nn('config_key_not_null', 'key')] }) as never]
+    const b = empty(); b.tables = [table({ constraints: [nn('settings_key_not_null', 'key')] }) as never]
+    expect(diffState(a, b)).toEqual([])
+
+    const c = empty(); c.tables = [table({ constraints: [nn('config_key_not_null', 'value')] }) as never]
+    expect(diffState(a, c)).toEqual([
+      'constraint on public.t NOT NULL key: missing',
+      'constraint on public.t NOT NULL value: unexpected',
+    ])
+  })
 })

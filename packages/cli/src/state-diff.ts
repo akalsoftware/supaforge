@@ -100,8 +100,11 @@ function compareTable(out: string[], subject: string, a: StateTable, b: StateTab
   compareKeyed(out, 'column', a.columns, b.columns,
     c => `${prefix}.${c.name}`,
     (o, s, x, y) => compareColumn(o, s, x, y))
+  // A NOT NULL, a constraint from PostgreSQL 18, by the column it holds for:
+  // its name is a table's or column's old one after a rename, or one the
+  // server picked, and an older source has none to compare.
   compareKeyed(out, `constraint on ${prefix}`, a.constraints, b.constraints,
-    c => c.name,
+    c => c.type === 'not_null' ? c.definition : c.name,
     (o, s, x, y) => {
       compareField(o, s, 'definition', x.definition, y.definition)
       compareField(o, s, 'validated', x.validated, y.validated)

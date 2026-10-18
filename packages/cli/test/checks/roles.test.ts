@@ -136,7 +136,7 @@ describe('RolesCheck', () => {
     expect(grantIssue!.sql?.up).toContain('REVOKE INSERT')
   })
 
-  it('runs all 15 queries (roles, grants, column grants, routine grants, version, tables and routines per side; the target\'s default grants)', async () => {
+  it('runs all 18 queries (roles, grants, column grants, routine grants, schema grants, version, tables and routines per side; the source\'s schemas; the target\'s default grants)', async () => {
     const calls: string[] = []
     const queryFn: QueryFn = async (_dbUrl, sql) => {
       calls.push(sql)
@@ -144,7 +144,8 @@ describe('RolesCheck', () => {
     }
     const check = new RolesCheck(queryFn)
     await check.scan(mockContext())
-    expect(calls).toHaveLength(15)
+    expect(calls).toHaveLength(18)
+    expect(calls.filter(s => s.includes('n.nspacl'))).toHaveLength(2)
     expect(calls.filter(s => s.includes('proacl'))).toHaveLength(2)
     expect(calls.filter(s => s.includes('server_version_num'))).toHaveLength(2)
     const roleQueries  = calls.filter(s => s.includes('rolsuper'))
@@ -404,7 +405,7 @@ describe('a new table keeps the source\'s grants, not the target\'s defaults', (
       return source ? [] : ['anon', 'authenticated'].flatMap(grantee =>
         ALL.map(privilege_type => ({ table_schema: 'public', grantee, privilege_type, is_grantable: false })))
     }
-    if (sql.includes('attacl') || sql.includes('rolsuper') || sql.includes('pg_proc')) return []
+    if (sql.includes('attacl') || sql.includes('rolsuper') || sql.includes('pg_proc') || sql.includes("'schema' AS object_kind")) return []
     if (sql.includes('server_version_num')) return [{ v: '150008' }]
     if (sql.includes('relacl')) {
       return source ? [
@@ -526,5 +527,57 @@ describe('grants on a routine only the target has', () => {
     }) as unknown as QueryFn
     const issues = await new RolesCheck(queryFn).scan(mockContext())
     expect(issues).toEqual([])
+  })
+})
+
+// USAGE on a schema of its own is what lets a role reach the tables in it at
+// all; it was not compared, so a target without it read as matching.
+describe('RolesCheck: grants on schemas', () => {
+  const schemaGrant = (overrides: Record<string, unknown> = {}) =>
+    makeGrant({ table_schema: 'app', table_name: '', privilege_type: 'USAGE', object_kind: 'schema', ...overrides })
+  const scanWith = (source: unknown[], target: unknown[], schemas = ['app']) => new RolesCheck(async (dbUrl, sql) => {
+    if (sql.includes('pg_roles')) return [makeRole()]
+    if (sql.includes('n.nspacl')) return (dbUrl.includes('source') ? source : target) as never
+    if (sql.includes("'schema' AS object_kind") && dbUrl.includes('source')) {
+      return schemas.map(table_schema => ({ table_schema, table_name: '', object_kind: 'schema' })) as never
+    }
+    return []
+  }).scan(mockContext())
+
+  it('reports a schema grant the target lacks, with the GRANT that makes it', async () => {
+    const issues = await scanWith([schemaGrant()], [])
+    const missing = issues.find(i => i.id.startsWith('roles-grant-missing'))
+    expect(missing?.title).toContain('USAGE ON schema app TO app_readonly')
+    expect(missing?.sql?.up).toBe('GRANT USAGE ON SCHEMA "app" TO "app_readonly";')
+    expect(missing?.sql?.down).toBe('REVOKE USAGE ON SCHEMA "app" FROM "app_readonly";')
+  })
+
+  it('reports one only the target has, and revokes it', async () => {
+    const issues = await scanWith([], [schemaGrant({ privilege_type: 'CREATE' })])
+    const extra = issues.find(i => i.id.startsWith('roles-grant-extra'))
+    expect(extra?.sql?.up).toBe('REVOKE CREATE ON SCHEMA "app" FROM "app_readonly";')
+  })
+
+  it('leaves the grants on a schema only the target has to the schema check', async () => {
+    expect(await scanWith([], [schemaGrant({ table_schema: 'old' })])).toEqual([])
+  })
+
+  it('reports nothing when both match', async () => {
+    expect(await scanWith([schemaGrant()], [schemaGrant()])).toEqual([])
+  })
+})
+
+describe('comparablePrivileges: CREATE on public across PostgreSQL 15', () => {
+  const g = { grantee: 'PUBLIC', table_schema: 'public', table_name: '', privilege_type: 'CREATE', is_grantable: false, object_kind: 'schema' as const }
+
+  it('leaves out the default that changed, in either direction', () => {
+    expect(comparablePrivileges(140010, 170000)(g)).toBe(false)
+    expect(comparablePrivileges(170000, 140010)(g)).toBe(false)
+  })
+
+  it('still compares it between servers on the same side of the change', () => {
+    expect(comparablePrivileges(140010, 140012)(g)).toBe(true)
+    expect(comparablePrivileges(150008, 180000)(g)).toBe(true)
+    expect(comparablePrivileges(140010, 170000)({ ...g, table_schema: 'app' })).toBe(true)
   })
 })

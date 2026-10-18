@@ -700,6 +700,20 @@ async function captureRoleGrants(
         AND (a.grantee = 0 OR pg_get_userbyid(a.grantee) NOT LIKE 'pg\\_%')
         AND n.nspname NOT IN (${excluded})
       UNION ALL
+      -- Schemas: USAGE on a schema of its own is what lets a role reach its tables.
+      SELECT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END,
+             n.nspname, '', NULL::text, a.privilege_type, a.is_grantable, 'SCHEMA', NULL::text
+      FROM pg_namespace n
+      CROSS JOIN LATERAL aclexplode(n.nspacl) a
+      WHERE n.nspacl IS NOT NULL AND a.grantee <> n.nspowner
+        AND n.nspname NOT IN (${excluded}) AND n.nspname NOT LIKE 'pg\\_%' AND n.nspname <> 'information_schema'
+        AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_namespace'::regclass AND d.objid = n.oid AND d.deptype = 'e')
+        AND (a.grantee = 0 OR pg_get_userbyid(a.grantee) NOT IN (
+          'postgres','supabase_admin','authenticator','supabase_auth_admin',
+          'supabase_storage_admin','dashboard_user','pgbouncer','supavisor'
+        ))
+        AND (a.grantee = 0 OR pg_get_userbyid(a.grantee) NOT LIKE 'pg\\_%')
+      UNION ALL
       SELECT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END,
              n.nspname, c.relname, att.attname, a.privilege_type, a.is_grantable, '', NULL::text
       FROM pg_attribute att
@@ -713,7 +727,7 @@ async function captureRoleGrants(
     `) as unknown as Array<{
       grantee: string; table_schema: string; table_name: string
       column_name: string | null; privilege_type: string; is_grantable: boolean
-      /** SEQUENCE, FUNCTION or PROCEDURE; empty for a table or view. */
+      /** SCHEMA, SEQUENCE, FUNCTION or PROCEDURE; empty for a table or view. */
       keyword: string
       /** A routine's identity arguments. */
       args: string | null
@@ -732,21 +746,82 @@ async function captureRoleGrants(
     }
     const statements = [...grouped.values()].map(([row, ...rest]) =>
       `GRANT ${[row, ...rest].map(r => r.privilege_type + (r.column_name ? ` (${quoteName(r.column_name)})` : '')).join(', ')}`
-      + ` ON ${row.keyword ? `${row.keyword} ` : ''}${quoteName(row.table_schema)}.${quoteName(row.table_name)}`
-      + (row.args !== null && row.keyword !== 'SEQUENCE' && row.keyword ? `(${row.args})` : '')
+      + ` ON ${row.keyword === 'SCHEMA' ? `SCHEMA ${quoteName(row.table_schema)}`
+        : `${row.keyword ? `${row.keyword} ` : ''}${quoteName(row.table_schema)}.${quoteName(row.table_name)}`}`
+      + (row.args !== null && row.keyword !== 'SEQUENCE' && row.keyword !== 'SCHEMA' && row.keyword ? `(${row.args})` : '')
       // PUBLIC is a keyword; quoted, it names a role that does not exist.
       + ` TO ${row.grantee === 'PUBLIC' ? 'PUBLIC' : quoteName(row.grantee)}`
       + (row.is_grantable ? ' WITH GRANT OPTION' : '')
       + ';')
 
-    const output = statements.length > 0
-      ? `-- SupaForge Role Grants Snapshot\n-- ${rows.length} grant(s)\n\n${statements.join('\n')}\n`
+    const defaults = await defaultPrivilegeStatements(dbUrl, queryFn, excluded)
+    const all = [...statements, ...defaults]
+    const output = all.length > 0
+      ? `-- SupaForge Role Grants Snapshot\n-- ${rows.length} grant(s), ${defaults.length} default privilege statement(s)\n\n${all.join('\n')}\n`
       : '-- No role grants found\n'
     await writeFile(join(dir, file), output)
-    return { captured: true, file, itemCount: rows.length }
+    return { captured: true, file, itemCount: rows.length + defaults.length }
   } catch (err) {
     return { captured: false, file, itemCount: 0, error: errMsg(err) }
   }
+}
+
+/** What `ALTER DEFAULT PRIVILEGES` calls each kind pg_default_acl records. */
+const DEFAULT_ACL_KINDS: Record<string, string> = { r: 'TABLES', S: 'SEQUENCES', f: 'FUNCTIONS', T: 'TYPES', n: 'SCHEMAS' }
+
+/**
+ * The `ALTER DEFAULT PRIVILEGES` that make each role's defaults what they
+ * are: what its new tables, sequences, functions, types or schemas are
+ * granted. One for a single schema adds to the global one; the global one
+ * replaces PostgreSQL's built-in default for the kind, so it is the GRANTs
+ * and REVOKEs between the two. A platform role's defaults are the platform's.
+ */
+async function defaultPrivilegeStatements(dbUrl: string, queryFn: QueryFn, excludedSchemas: string): Promise<string[]> {
+  const platform = `'postgres','supabase_admin','authenticator','supabase_auth_admin','supabase_storage_admin','dashboard_user','pgbouncer','supavisor'`
+  const rows = await queryFn(dbUrl, `
+    WITH d AS (
+      SELECT d.*, n.nspname FROM pg_default_acl d LEFT JOIN pg_namespace n ON n.oid = d.defaclnamespace
+      WHERE pg_get_userbyid(d.defaclrole) NOT IN ('supabase_admin','supabase_auth_admin','supabase_storage_admin','dashboard_user')
+        AND (n.nspname IS NULL OR n.nspname NOT IN (${excludedSchemas}))
+    ), have AS (
+      SELECT d.oid, a.* FROM d CROSS JOIN LATERAL aclexplode(d.defaclacl) a
+    ), builtin AS (
+      SELECT d.oid, b.* FROM d CROSS JOIN LATERAL aclexplode(acldefault(d.defaclobjtype, d.defaclrole)) b
+      WHERE d.defaclnamespace = 0
+    )
+    SELECT pg_get_userbyid(d.defaclrole) AS role, d.nspname AS schema, d.defaclobjtype::text AS kind, x.action,
+           CASE WHEN x.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(x.grantee) END AS grantee,
+           x.privilege_type, x.is_grantable
+    FROM d JOIN (
+      SELECT h.oid, 'GRANT' AS action, h.grantee, h.privilege_type, h.is_grantable FROM have h
+       WHERE NOT EXISTS (SELECT 1 FROM builtin b WHERE b.oid = h.oid AND b.grantee = h.grantee
+                           AND b.privilege_type = h.privilege_type AND b.is_grantable = h.is_grantable)
+      UNION ALL
+      SELECT b.oid, 'REVOKE', b.grantee, b.privilege_type, b.is_grantable FROM builtin b
+       WHERE NOT EXISTS (SELECT 1 FROM have h WHERE h.oid = b.oid AND h.grantee = b.grantee
+                           AND h.privilege_type = b.privilege_type AND h.is_grantable = b.is_grantable)
+    ) x ON x.oid = d.oid
+    WHERE (x.grantee = 0 OR pg_get_userbyid(x.grantee) NOT IN (${platform}) OR x.grantee = d.defaclrole)
+      AND (x.grantee = 0 OR pg_get_userbyid(x.grantee) NOT LIKE 'pg\\_%')
+    ORDER BY 1, 2 NULLS FIRST, 3, 4, 5, 6
+  `) as unknown as Array<{ role: string; schema: string | null; kind: string; action: 'GRANT' | 'REVOKE'
+    grantee: string; privilege_type: string; is_grantable: boolean }>
+
+  const grouped = new Map<string, typeof rows>()
+  for (const row of rows) {
+    if (!DEFAULT_ACL_KINDS[row.kind]) continue
+    const key = JSON.stringify([row.role, row.schema, row.kind, row.action, row.grantee, row.action === 'GRANT' && row.is_grantable])
+    grouped.set(key, [...(grouped.get(key) ?? []), row])
+  }
+  const grantee = (g: string) => g === 'PUBLIC' ? 'PUBLIC' : quoteName(g)
+  return [...grouped.values()].map(([row, ...rest]) => {
+    const head = `ALTER DEFAULT PRIVILEGES FOR ROLE ${quoteName(row.role)}${row.schema ? ` IN SCHEMA ${quoteName(row.schema)}` : ''}`
+    const privileges = [row, ...rest].map(r => r.privilege_type).join(', ')
+    const on = DEFAULT_ACL_KINDS[row.kind]
+    return row.action === 'GRANT'
+      ? `${head} GRANT ${privileges} ON ${on} TO ${grantee(row.grantee)}${row.is_grantable ? ' WITH GRANT OPTION' : ''};`
+      : `${head} REVOKE ${privileges} ON ${on} FROM ${grantee(row.grantee)};`
+  })
 }
 
 async function captureExtensions(

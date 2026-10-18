@@ -176,6 +176,10 @@ export default class Diff extends BaseCommand {
       description: 'With --apply, print the fixes in the order they would run without executing any of them',
       default: false,
     }),
+    'no-snapshot': Flags.boolean({
+      description: 'Read each query on its own, rather than each database as of one instant (which holds what it reads locked until the scan ends, as pg_dump does)',
+      default: false,
+    }),
     'no-transaction': Flags.boolean({
       description: 'With --apply, run each fix on its own instead of rolling the whole set back on the first failure',
       aliases: ['continue-on-error'],
@@ -241,12 +245,13 @@ export default class Diff extends BaseCommand {
    */
   private renderApplyResult(result: PromoteResult, dryRun: boolean): void {
     const verb = dryRun ? 'Would apply' : 'Applied'
+    for (const warning of result.warnings ?? []) this.log(`${warn(warning)}\n`)
     if (result.applied.length > 0) {
       const heading = `${verb} ${result.applied.length} fix(es)${dryRun ? ', in this order' : ''}:`
       this.log(dryRun ? bold(heading) : ok(heading))
       result.applied.forEach((stmt, i) => {
         const glyph = dryRun ? dim(`${i + 1}.`) : ok('✓')
-        this.log(`  ${glyph} ${dim(`[${stmt.check}]`)} ${stmt.issueId}`)
+        this.log(`  ${glyph} ${dim(`[${stmt.check}]`)} ${stmt.issueId}${stmt.note ? dim(` — ${stmt.note}`) : ''}`)
         // The SQL itself only in a dry run: it is the thing being reviewed,
         // and printing it after the fact would just repeat --detail.
         if (dryRun && stmt.sql) this.log(`     ${dim(stmt.sql.replace(/\s*\n\s*/g, ' '))}`)
@@ -395,7 +400,7 @@ export default class Diff extends BaseCommand {
     // the flag that performs one (issue #71).
     if (flags.apply || flags['dry-run']) {
       const onProgress = makeProgress()
-      const scanResult = await scan(registry, { config, checks, skip, tableFilter, onProgress, onDetail: makeDetail() })
+      const scanResult = await scan(registry, { config, checks, skip, tableFilter, onProgress, onDetail: makeDetail(), snapshot: !flags['no-snapshot'] })
       this.setCheckSummaries(scanResult.checks.map(c => ({
         check: c.check,
         status: c.status,
@@ -522,6 +527,7 @@ export default class Diff extends BaseCommand {
 
       const result = await promote({
         dbUrl: targetEnv.dbUrl,
+        sourceUrl: config.environments[config.source!]?.dbUrl,
         scanResult,
         checks,
         dryRun,
@@ -558,7 +564,7 @@ export default class Diff extends BaseCommand {
 
     // ── Scan mode (summary, detail, CI, or JSON) ────────────────────────────
     const onProgress = makeProgress()
-    const result = await scan(registry, { config, checks, skip, tableFilter, onProgress, onDetail: makeDetail() })
+    const result = await scan(registry, { config, checks, skip, tableFilter, onProgress, onDetail: makeDetail(), snapshot: !flags['no-snapshot'] })
     this.setCheckSummaries(result.checks.map(c => ({
       check: c.check,
       status: c.status,

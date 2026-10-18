@@ -2,9 +2,10 @@ import pg from 'pg'
 import { newPgClient } from './db.js'
 import type { ScanResult, SyncAction } from './types/drift'
 import { errMsg } from './utils/error'
-import { ABSENT_ON_TARGET, EXTENSION_UNAVAILABLE, UNDEFINED_COLUMN, sqlState } from './pg-errors.js'
+import { ABSENT_ON_TARGET, EXTENSION_UNAVAILABLE, OLDER_SERVER, UNDEFINED_COLUMN, sqlState } from './pg-errors.js'
 import { destructiveReason } from './dbdiff'
 import { parseStatements } from './sql-ast'
+import { estimateLocks, lockBudgetWarning, readLockBudget } from './lock-budget.js'
 import {
   orderStatements, referencedTables,
   createdPolicies, createsOnlyPolicies,
@@ -21,6 +22,12 @@ export type FetchFn = (url: string, init?: RequestInit) => Promise<Response>
 export interface PromoteOptions {
   /** Target database connection string */
   dbUrl: string
+  /**
+   * The source's connection string. Its PostgreSQL version tells a fix an
+   * older target cannot parse — a feature it does not have — from any other
+   * failure: that fix is left out, as one needing a missing extension is.
+   */
+  sourceUrl?: string
   /** The scan result with SQL fixes to apply */
   scanResult: ScanResult
   /** Only promote specific checks */
@@ -75,7 +82,8 @@ type PlannedAction = FixOrigin & { action: SyncAction }
 type PlannedSkip = FixOrigin & { reason: string }
 
 export interface PromoteResult {
-  applied: (FixOrigin & { sql?: string; action?: string })[]
+  /** `note`: why a fix that did nothing still counts — see revokesFromAbsent. */
+  applied: (FixOrigin & { sql?: string; action?: string; note?: string })[]
   skipped: PlannedSkip[]
   errors: (FixOrigin & { error: string })[]
   /**
@@ -84,6 +92,8 @@ export interface PromoteResult {
    * lists what is actually in the target now.
    */
   rolledBack?: (FixOrigin & { sql?: string })[]
+  /** Said before the fixes ran: they may need more locks than the target has — see lock-budget. */
+  warnings?: string[]
 }
 
 interface PlannedWork {
@@ -468,13 +478,15 @@ async function executeSql(
   statements: PlannedSql[],
   result: PromoteResult,
   transactional: boolean,
+  sourceMajor?: number,
 ): Promise<void> {
   if (statements.length === 0) return
 
   const client = newPgClient(dbUrl)
   await client.connect()
   try {
-    if (transactional) await runInTransaction(client, statements, result)
+    const olderTarget = sourceMajor !== undefined && (await majorOf(client)) < sourceMajor
+    if (transactional) await runInTransaction(client, statements, result, olderTarget)
     else await runIndependently(client, statements, result)
   } finally {
     await client.end()
@@ -488,10 +500,28 @@ async function executeSql(
  * this way, so it rehearses what the apply will do rather than a stricter
  * script that stopped at the first fix the server could not hold.
  */
-export async function runLikeApply(dbUrl: string, statements: PlannedSql[]): Promise<PromoteResult> {
+export async function runLikeApply(dbUrl: string, statements: PlannedSql[], sourceMajor?: number): Promise<PromoteResult> {
   const result: PromoteResult = { applied: [], skipped: [], errors: [] }
-  await executeSql(dbUrl, statements, result, true)
+  await executeSql(dbUrl, statements, result, true, sourceMajor)
   return result
+}
+
+/** A server's major version, from a client or a connection string. */
+async function majorOf(client: Pick<pg.Client, 'query'>): Promise<number> {
+  const { rows: [row] } = await client.query<{ v: string }>(`SELECT current_setting('server_version_num') AS v`)
+  return Math.floor(Number(row?.v ?? 0) / 10000)
+}
+
+export async function serverMajor(dbUrl: string): Promise<number | undefined> {
+  const client = newPgClient(dbUrl)
+  try {
+    await client.connect()
+    return await majorOf(client)
+  } catch {
+    return undefined
+  } finally {
+    await client.end().catch(() => {})
+  }
 }
 
 /** One statement at a time: a failure is recorded and the rest still run. */
@@ -552,12 +582,16 @@ async function runInTransaction(
   client: pg.Client,
   statements: PlannedSql[],
   result: PromoteResult,
+  olderTarget = false,
 ): Promise<void> {
   const additions = statements.filter(s => isEnumValueAddition(s.sql))
   const rest = statements.filter(s => !isEnumValueAddition(s.sql))
 
-  if (additions.length > 0 && !(await runBatch(client, additions, result))) return
-  await runBatch(client, rest, result)
+  const warning = lockBudgetWarning(estimateLocks(rest.map(s => s.sql)), await readLockBudget(client), 'This apply')
+  if (warning) result.warnings = [...(result.warnings ?? []), warning]
+
+  if (additions.length > 0 && !(await runBatch(client, additions, result, olderTarget))) return
+  await runBatch(client, rest, result, olderTarget)
 }
 
 /**
@@ -567,10 +601,14 @@ async function runInTransaction(
  * Only "does not exist" failures qualify, and for `CREATE EXTENSION`, an
  * extension the server does not ship.
  */
-export function unmetDependency(sql: string, err: unknown): string | undefined {
+export function unmetDependency(sql: string, err: unknown, olderTarget = false): string | undefined {
   const code = sqlState(err)
   if (!code) return undefined
-  if (/^\s*CREATE\s+EXTENSION\b/i.test(sqlSkeleton(sql))) {
+  if (olderTarget && OLDER_SERVER.has(code)) {
+    return "the target's PostgreSQL is older than the source's and does not support it"
+  }
+  // Anywhere in the fix: one into a schema of its own makes the schema first.
+  if (/(?:^|;)\s*CREATE\s+EXTENSION\b/i.test(sqlSkeleton(sql))) {
     return EXTENSION_UNAVAILABLE.has(code) ? 'this server does not ship it' : undefined
   }
   if (ABSENT_ON_TARGET.has(code) || code === UNDEFINED_COLUMN) {
@@ -579,11 +617,33 @@ export function unmetDependency(sql: string, err: unknown): string | undefined {
   return undefined
 }
 
+/**
+ * Whether `sql` only revokes privileges on one object, so that object being
+ * absent leaves nothing to do. Asked only of a fix that failed because
+ * something does not exist, once retrying it after the others no longer
+ * helps — a view dropped and created again by the same apply takes its
+ * revoke after the creation.
+ */
+export function revokesFromAbsent(sql: string): boolean {
+  const statements = parseStatements(sql)
+  if (!statements?.length) return false
+  const targets = new Set<string>()
+  for (const { kind, node } of statements) {
+    if (kind !== 'GrantStmt' || node.is_grant || node.targtype !== 'ACL_TARGET_OBJECT') return false
+    if ((node.objects ?? []).length !== 1) return false
+    // Where in the text each was written is not which object it is.
+    targets.add(JSON.stringify([node.objtype, node.objects[0]], (key, value) => key === 'location' ? undefined : value))
+  }
+  return targets.size === 1
+}
+
+
 /** One transaction; true when it committed. */
 async function runBatch(
   client: pg.Client,
   statements: PlannedSql[],
   result: PromoteResult,
+  olderTarget = false,
 ): Promise<boolean> {
   if (statements.length === 0) return true
   const done: PromoteResult['applied'] = []
@@ -603,7 +663,7 @@ async function runBatch(
         await client.query('RELEASE SAVEPOINT sf_fix')
         done.push({ check: stmt.check, issueId: stmt.issueId, sql: stmt.sql })
       } catch (err) {
-        const why = unmetDependency(stmt.sql, err)
+        const why = unmetDependency(stmt.sql, err, olderTarget)
         if (why && await client.query('ROLLBACK TO SAVEPOINT sf_fix').then(() => true, () => false)) {
           unmet.push({ stmt, err, why })
           continue
@@ -616,6 +676,14 @@ async function runBatch(
     }
     if (unmet.length === pending.length) break
     pending = unmet.map(u => u.stmt)
+  }
+
+  // A revoke on an object the target no longer has — another fix in this
+  // apply dropped it — has nothing left to take away: done, not left out.
+  const gone = unmet.filter(u => revokesFromAbsent(u.stmt.sql))
+  unmet = unmet.filter(u => !gone.includes(u))
+  for (const { stmt } of gone) {
+    done.push({ check: stmt.check, issueId: stmt.issueId, sql: stmt.sql, note: 'nothing to revoke: the object is not on the target' })
   }
 
   await client.query('COMMIT')
@@ -697,7 +765,8 @@ export async function promote(options: PromoteOptions): Promise<PromoteResult> {
     return result
   }
 
-  await executeSql(dbUrl, sqlStatements, result, transactional)
+  await executeSql(dbUrl, sqlStatements, result, transactional,
+    options.sourceUrl ? await serverMajor(options.sourceUrl) : undefined)
 
   // A rolled-back batch leaves the target untouched, so the API calls that
   // would have gone with it must not fire either — they are not transactional

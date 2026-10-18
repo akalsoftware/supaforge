@@ -125,6 +125,7 @@ Useful `diff` flags:
 | `--allow-destructive` | Also apply drops and deletes |
 | `--apply-posture` | Also apply the target-only checks' fixes |
 | `--no-transaction` | Apply fix by fix, keeping what works |
+| `--no-snapshot` | Read each query on its own. By default each database is read as of one instant, so a change made while the scan runs is seen by all of it or none; as with `pg_dump`, what it reads stays locked until the scan ends |
 | `--json` / `--ci` | Machine-readable output; CI annotations and exit codes |
 
 ## Applying fixes safely
@@ -197,7 +198,9 @@ the output.
 - **Targets.** Restore runs as one transaction and expects an empty database.
   `--force` clears the snapshot's own schemas first (never Supabase's) and
   puts back the triggers and policies outside them that depended on what it
-  cleared.
+  cleared. A restore or apply that looks likely to need more locks than the
+  target allows in one transaction says so before it starts;
+  `--no-transaction` commits as it goes instead.
 - **Plain PostgreSQL.** Restoring into plain PostgreSQL works. What can't
   exist there is skipped and named: a foreign key to `auth.users`, a webhook,
   an extension the server doesn't ship, and everything that needs it.

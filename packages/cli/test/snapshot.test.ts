@@ -542,6 +542,46 @@ describe('captureSnapshot: grants are captured one statement per role and object
   })
 })
 
+// Grants on schemas, and default privileges, were left out of roles.sql: a
+// restore lost USAGE on a schema of the project's own — so its tables were
+// out of the Data API's reach — and what new tables are granted.
+describe('roles.sql: schemas and default privileges', () => {
+  let dir: string
+  beforeEach(async () => { dir = await mkdtemp(join(tmpdir(), 'sf-snap-roles-')) })
+  afterEach(async () => { await rm(dir, { recursive: true, force: true }) })
+
+  it('grants on a schema, and makes each role\'s defaults what they are', async () => {
+    const grants = [
+      { grantee: 'reader', table_schema: 'app', table_name: '', column_name: null, privilege_type: 'USAGE', is_grantable: false, keyword: 'SCHEMA', args: null },
+    ]
+    const defaults = [
+      // One schema's entry adds to the global one.
+      { role: 'owner', schema: 'app', kind: 'r', action: 'GRANT', grantee: 'reader', privilege_type: 'SELECT', is_grantable: false },
+      // The global one, against PostgreSQL's built-in default for functions.
+      { role: 'owner', schema: null, kind: 'f', action: 'REVOKE', grantee: 'PUBLIC', privilege_type: 'EXECUTE', is_grantable: false },
+      { role: 'owner', schema: null, kind: 'S', action: 'GRANT', grantee: 'reader', privilege_type: 'SELECT', is_grantable: true },
+      { role: 'owner', schema: null, kind: 'S', action: 'GRANT', grantee: 'reader', privilege_type: 'USAGE', is_grantable: true },
+    ]
+    const queryFn = (async (_url: string, sql: string) =>
+      sql.includes('pg_default_acl') ? defaults : sql.includes('nspacl') ? grants : []) as unknown as QueryFn
+    const result = await captureSnapshot({
+      envName: 'prod',
+      env: { dbUrl: 'postgres://example' },
+      config: { environments: { prod: { dbUrl: 'postgres://example' } } } as never,
+      outputDir: dir,
+      queryFn,
+      fetchFn: (async () => new Response('[]', { status: 200 })) as never,
+    })
+    const lines = (await readFile(join(result.dir, 'roles.sql'), 'utf8')).split('\n').filter(l => /^(GRANT|ALTER)/.test(l))
+    expect(lines).toEqual([
+      'GRANT USAGE ON SCHEMA "app" TO "reader";',
+      'ALTER DEFAULT PRIVILEGES FOR ROLE "owner" IN SCHEMA "app" GRANT SELECT ON TABLES TO "reader";',
+      'ALTER DEFAULT PRIVILEGES FOR ROLE "owner" REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;',
+      'ALTER DEFAULT PRIVILEGES FOR ROLE "owner" GRANT SELECT, USAGE ON SEQUENCES TO "reader" WITH GRANT OPTION;',
+    ])
+  })
+})
+
 describe('a snapshot without schema.sql', () => {
   const manifest = (schema: Record<string, unknown>) => ({
     timestamp: '20250101T120000Z',

@@ -252,6 +252,8 @@ export default class Restore extends BaseCommand {
       return
     }
 
+    for (const warning of result.warnings ?? []) this.log(`⚠  ${warning}\n`)
+
     if (result.applied.length > 0) {
       this.log(`✅ Applied ${result.applied.length} operation(s):`)
       for (const op of result.applied.slice(0, 20)) {

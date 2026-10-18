@@ -156,6 +156,12 @@ describe('previewSnapshotRestore: layer coverage', () => {
  * member of publication`.
  */
 describe('rolesNamedBy', () => {
+  it('names the roles default privileges are for and grant to, not those they revoke from', () => {
+    expect(rolesNamedBy('ALTER DEFAULT PRIVILEGES FOR ROLE "owner" IN SCHEMA app GRANT SELECT ON TABLES TO reader, PUBLIC;'))
+      .toEqual(['owner', 'reader'])
+    expect(rolesNamedBy('ALTER DEFAULT PRIVILEGES REVOKE EXECUTE ON FUNCTIONS FROM gone;')).toEqual([])
+  })
+
   it('names the role a grant needs', () => {
     expect(rolesNamedBy('GRANT SELECT ON "public"."orders" TO "anon";')).toEqual(['anon'])
   })
