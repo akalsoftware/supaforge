@@ -75,7 +75,8 @@ type PlannedAction = FixOrigin & { action: SyncAction }
 type PlannedSkip = FixOrigin & { reason: string }
 
 export interface PromoteResult {
-  applied: (FixOrigin & { sql?: string; action?: string })[]
+  /** `note`: why a fix that did nothing still counts — see revokesFromAbsent. */
+  applied: (FixOrigin & { sql?: string; action?: string; note?: string })[]
   skipped: PlannedSkip[]
   errors: (FixOrigin & { error: string })[]
   /**
@@ -579,6 +580,26 @@ export function unmetDependency(sql: string, err: unknown): string | undefined {
   return undefined
 }
 
+/**
+ * Whether `sql` only revokes privileges on one object, so that object being
+ * absent leaves nothing to do. Asked only of a fix that failed because
+ * something does not exist, once retrying it after the others no longer
+ * helps — a view dropped and created again by the same apply takes its
+ * revoke after the creation.
+ */
+export function revokesFromAbsent(sql: string): boolean {
+  const statements = parseStatements(sql)
+  if (!statements?.length) return false
+  const targets = new Set<string>()
+  for (const { kind, node } of statements) {
+    if (kind !== 'GrantStmt' || node.is_grant || node.targtype !== 'ACL_TARGET_OBJECT') return false
+    if ((node.objects ?? []).length !== 1) return false
+    // Where in the text each was written is not which object it is.
+    targets.add(JSON.stringify([node.objtype, node.objects[0]], (key, value) => key === 'location' ? undefined : value))
+  }
+  return targets.size === 1
+}
+
 /** One transaction; true when it committed. */
 async function runBatch(
   client: pg.Client,
@@ -616,6 +637,14 @@ async function runBatch(
     }
     if (unmet.length === pending.length) break
     pending = unmet.map(u => u.stmt)
+  }
+
+  // A revoke on an object the target no longer has — another fix in this
+  // apply dropped it — has nothing left to take away: done, not left out.
+  const gone = unmet.filter(u => revokesFromAbsent(u.stmt.sql))
+  unmet = unmet.filter(u => !gone.includes(u))
+  for (const { stmt } of gone) {
+    done.push({ check: stmt.check, issueId: stmt.issueId, sql: stmt.sql, note: 'nothing to revoke: the object is not on the target' })
   }
 
   await client.query('COMMIT')

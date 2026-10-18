@@ -246,7 +246,7 @@ export default class Diff extends BaseCommand {
       this.log(dryRun ? bold(heading) : ok(heading))
       result.applied.forEach((stmt, i) => {
         const glyph = dryRun ? dim(`${i + 1}.`) : ok('✓')
-        this.log(`  ${glyph} ${dim(`[${stmt.check}]`)} ${stmt.issueId}`)
+        this.log(`  ${glyph} ${dim(`[${stmt.check}]`)} ${stmt.issueId}${stmt.note ? dim(` — ${stmt.note}`) : ''}`)
         // The SQL itself only in a dry run: it is the thing being reviewed,
         // and printing it after the fact would just repeat --detail.
         if (dryRun && stmt.sql) this.log(`     ${dim(stmt.sql.replace(/\s*\n\s*/g, ' '))}`)

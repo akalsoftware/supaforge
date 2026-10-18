@@ -27,7 +27,14 @@ vi.mock('pg', () => ({
           else if (sql === 'ROLLBACK') pending = new Set(committed)
           else if (sql.startsWith('SAVEPOINT')) atSavepoint = new Set(pending)
           else if (sql.startsWith('ROLLBACK TO SAVEPOINT')) pending = new Set(atSavepoint)
-          else if (sql.startsWith('RELEASE SAVEPOINT')) { /* kept */ } else {
+          else if (sql.startsWith('RELEASE SAVEPOINT')) { /* kept */ }
+          // A revoke on `public.<name>` needs <name> to exist.
+          else if (/^REVOKE\b/i.test(sql)) {
+            const on = /\bON\s+(?:TABLE\s+)?public\.(\w+)/i.exec(sql)?.[1]
+            if (on && !pending.has(on)) {
+              throw Object.assign(new Error(`relation "public.${on}" does not exist`), { code: '42P01' })
+            }
+          } else {
             const code = /code:(\w+)/.exec(sql)?.[1]
             if (code) throw Object.assign(new Error(`failed with ${code}`), { code })
             for (const need of /needs:(\w+)/.exec(sql)?.[1].split(',') ?? []) {
@@ -45,7 +52,7 @@ vi.mock('pg', () => ({
   },
 }))
 
-const { promote, unmetDependency } = await import('../src/promote.js')
+const { promote, unmetDependency, revokesFromAbsent } = await import('../src/promote.js')
 
 function scan(fixes: Array<[id: string, spec: string]>): ScanResult {
   const issues = fixes.map(([id, spec]) => ({
@@ -143,5 +150,86 @@ describe('unmetDependency', () => {
     expect(unmetDependency('CREATE TABLE t (id int)', err('42P07'))).toBeUndefined()
     expect(unmetDependency('ALTER TABLE t ADD CONSTRAINT u UNIQUE (id)', err('23505'))).toBeUndefined()
     expect(unmetDependency('CREATE TABLE t (id int)', new Error('connection terminated'))).toBeUndefined()
+  })
+})
+
+// A view the target has and the source lacks is dropped by one fix, and its
+// grants revoked by others. Whichever ran first, the revokes are done: the
+// object they would take privileges from is gone (issue #147).
+describe('promote: revoking on an object the same apply drops', () => {
+  beforeEach(() => {
+    log.length = 0
+    committed = new Set(['old_v'])
+  })
+
+  const issue = (id: string, check: 'schema' | 'roles', up: string) =>
+    ({ id, check, severity: 'warning' as const, title: id, description: 'test', sql: { up, down: '' } })
+  const scanOf = (issues: ReturnType<typeof issue>[]): ScanResult => ({
+    timestamp: '', source: 's', target: 't', score: 0, postureScore: null,
+    checks: [{ check: 'schema', status: 'drifted', issues, durationMs: 1 }],
+    summary: { total: issues.length, critical: 0, warning: issues.length, info: 0 },
+  })
+
+  it('counts the revokes as done when the drop ran first', async () => {
+    // The stand-in "drops" old_v by forgetting it; the revokes then fail.
+    committed = new Set()
+    const result = await promote({
+      dbUrl: 'postgres://t',
+      scanResult: scanOf([
+        issue('drop-old_v', 'schema', "SELECT 'drops old_v'"),
+        issue('revoke-anon', 'roles', 'REVOKE SELECT ON TABLE public.old_v FROM anon'),
+        issue('revoke-authenticated', 'roles', 'REVOKE SELECT ON TABLE public.old_v FROM authenticated'),
+      ]),
+    })
+
+    expect(result.errors).toEqual([])
+    expect(result.applied.map(f => f.issueId)).toEqual(['drop-old_v', 'revoke-anon', 'revoke-authenticated'])
+    expect(result.applied.filter(f => f.note).map(f => f.note)).toEqual([
+      'nothing to revoke: the object is not on the target',
+      'nothing to revoke: the object is not on the target',
+    ])
+    expect(log).toContain('COMMIT')
+  })
+
+  it('still retries a revoke whose object a later fix creates', async () => {
+    committed = new Set()
+    const result = await promote({
+      dbUrl: 'postgres://t',
+      scanResult: scanOf([
+        issue('revoke-anon', 'roles', 'REVOKE SELECT ON TABLE public.made FROM anon'),
+        issue('create-made', 'schema', "SELECT 'provides:made'"),
+      ]),
+    })
+
+    expect(result.errors).toEqual([])
+    expect(result.applied.map(f => [f.issueId, f.note])).toEqual([['create-made', undefined], ['revoke-anon', undefined]])
+  })
+
+  it('still leaves out a grant on an object the target lacks', async () => {
+    committed = new Set()
+    const result = await promote({
+      dbUrl: 'postgres://t',
+      scanResult: scanOf([issue('grant-anon', 'roles', "SELECT 'needs:absent' /* GRANT */")]),
+    })
+
+    expect(result.applied).toEqual([])
+    expect(result.errors.map(e => e.issueId)).toEqual(['grant-anon'])
+  })
+})
+
+describe('revokesFromAbsent', () => {
+  it('is a revoke, or revokes, on one object', () => {
+    expect(revokesFromAbsent('REVOKE SELECT ON TABLE "public"."v" FROM "anon";')).toBe(true)
+    expect(revokesFromAbsent('REVOKE GRANT OPTION FOR SELECT ON public.v FROM anon; REVOKE SELECT ON public.v FROM anon;')).toBe(true)
+    expect(revokesFromAbsent('REVOKE EXECUTE ON FUNCTION public.f(int) FROM anon;')).toBe(true)
+  })
+
+  it('is not a grant, a drop, several objects or a whole schema', () => {
+    expect(revokesFromAbsent('GRANT SELECT ON public.v TO anon;')).toBe(false)
+    expect(revokesFromAbsent('DROP VIEW public.v;')).toBe(false)
+    expect(revokesFromAbsent('REVOKE SELECT ON public.a, public.b FROM anon;')).toBe(false)
+    expect(revokesFromAbsent('REVOKE SELECT ON public.a FROM anon; REVOKE SELECT ON public.b FROM anon;')).toBe(false)
+    expect(revokesFromAbsent('REVOKE SELECT ON ALL TABLES IN SCHEMA public FROM anon;')).toBe(false)
+    expect(revokesFromAbsent('not sql')).toBe(false)
   })
 })
