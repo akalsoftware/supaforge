@@ -523,6 +523,7 @@ export default class Diff extends BaseCommand {
 
       const result = await promote({
         dbUrl: targetEnv.dbUrl,
+        sourceUrl: config.environments[config.source!]?.dbUrl,
         scanResult,
         checks,
         dryRun,

@@ -292,7 +292,7 @@ export async function proveConvergence(opts: {
     // The migration under test.
     let notApplied: ProofResult['notApplied']
     if (opts.fixes) {
-      const replayed = await runLikeApply(cloneUrl, opts.fixes)
+      const replayed = await runLikeApply(cloneUrl, opts.fixes, sourceMajor)
       const unmet = replayed.errors.filter(e => / — not applied: /.test(e.error))
       const failed = replayed.errors.filter(e => !unmet.includes(e))
       if (failed.length > 0) {

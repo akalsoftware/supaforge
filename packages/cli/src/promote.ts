@@ -22,6 +22,12 @@ export type FetchFn = (url: string, init?: RequestInit) => Promise<Response>
 export interface PromoteOptions {
   /** Target database connection string */
   dbUrl: string
+  /**
+   * The source's connection string. Its PostgreSQL version tells a fix an
+   * older target cannot parse — a feature it does not have — from any other
+   * failure: that fix is left out, as one needing a missing extension is.
+   */
+  sourceUrl?: string
   /** The scan result with SQL fixes to apply */
   scanResult: ScanResult
   /** Only promote specific checks */
@@ -472,13 +478,15 @@ async function executeSql(
   statements: PlannedSql[],
   result: PromoteResult,
   transactional: boolean,
+  sourceMajor?: number,
 ): Promise<void> {
   if (statements.length === 0) return
 
   const client = newPgClient(dbUrl)
   await client.connect()
   try {
-    if (transactional) await runInTransaction(client, statements, result)
+    const olderTarget = sourceMajor !== undefined && (await majorOf(client)) < sourceMajor
+    if (transactional) await runInTransaction(client, statements, result, olderTarget)
     else await runIndependently(client, statements, result)
   } finally {
     await client.end()
@@ -492,10 +500,28 @@ async function executeSql(
  * this way, so it rehearses what the apply will do rather than a stricter
  * script that stopped at the first fix the server could not hold.
  */
-export async function runLikeApply(dbUrl: string, statements: PlannedSql[]): Promise<PromoteResult> {
+export async function runLikeApply(dbUrl: string, statements: PlannedSql[], sourceMajor?: number): Promise<PromoteResult> {
   const result: PromoteResult = { applied: [], skipped: [], errors: [] }
-  await executeSql(dbUrl, statements, result, true)
+  await executeSql(dbUrl, statements, result, true, sourceMajor)
   return result
+}
+
+/** A server's major version, from a client or a connection string. */
+async function majorOf(client: Pick<pg.Client, 'query'>): Promise<number> {
+  const { rows: [row] } = await client.query<{ v: string }>(`SELECT current_setting('server_version_num') AS v`)
+  return Math.floor(Number(row?.v ?? 0) / 10000)
+}
+
+export async function serverMajor(dbUrl: string): Promise<number | undefined> {
+  const client = newPgClient(dbUrl)
+  try {
+    await client.connect()
+    return await majorOf(client)
+  } catch {
+    return undefined
+  } finally {
+    await client.end().catch(() => {})
+  }
 }
 
 /** One statement at a time: a failure is recorded and the rest still run. */
@@ -556,6 +582,7 @@ async function runInTransaction(
   client: pg.Client,
   statements: PlannedSql[],
   result: PromoteResult,
+  olderTarget = false,
 ): Promise<void> {
   const additions = statements.filter(s => isEnumValueAddition(s.sql))
   const rest = statements.filter(s => !isEnumValueAddition(s.sql))
@@ -563,8 +590,8 @@ async function runInTransaction(
   const warning = lockBudgetWarning(estimateLocks(rest.map(s => s.sql)), await readLockBudget(client), 'This apply')
   if (warning) result.warnings = [...(result.warnings ?? []), warning]
 
-  if (additions.length > 0 && !(await runBatch(client, additions, result))) return
-  await runBatch(client, rest, result)
+  if (additions.length > 0 && !(await runBatch(client, additions, result, olderTarget))) return
+  await runBatch(client, rest, result, olderTarget)
 }
 
 /**
@@ -574,9 +601,12 @@ async function runInTransaction(
  * Only "does not exist" failures qualify, and for `CREATE EXTENSION`, an
  * extension the server does not ship.
  */
-export function unmetDependency(sql: string, err: unknown): string | undefined {
+export function unmetDependency(sql: string, err: unknown, olderTarget = false): string | undefined {
   const code = sqlState(err)
   if (!code) return undefined
+  if (olderTarget && OLDER_SERVER.has(code)) {
+    return "the target's PostgreSQL is older than the source's and does not support it"
+  }
   if (/^\s*CREATE\s+EXTENSION\b/i.test(sqlSkeleton(sql))) {
     return EXTENSION_UNAVAILABLE.has(code) ? 'this server does not ship it' : undefined
   }
@@ -606,11 +636,20 @@ export function revokesFromAbsent(sql: string): boolean {
   return targets.size === 1
 }
 
+/**
+ * How an older server refuses what a newer one wrote: a syntax it does not
+ * know (`UNIQUE NULLS NOT DISTINCT` before 15, a `VIRTUAL` column before 18),
+ * a feature it lacks, a parameter it does not have (`security_invoker` before
+ * 15). Taken as the target lacking it only when the target is older.
+ */
+const OLDER_SERVER: ReadonlySet<string> = new Set(['42601', '0A000', '22023'])
+
 /** One transaction; true when it committed. */
 async function runBatch(
   client: pg.Client,
   statements: PlannedSql[],
   result: PromoteResult,
+  olderTarget = false,
 ): Promise<boolean> {
   if (statements.length === 0) return true
   const done: PromoteResult['applied'] = []
@@ -630,7 +669,7 @@ async function runBatch(
         await client.query('RELEASE SAVEPOINT sf_fix')
         done.push({ check: stmt.check, issueId: stmt.issueId, sql: stmt.sql })
       } catch (err) {
-        const why = unmetDependency(stmt.sql, err)
+        const why = unmetDependency(stmt.sql, err, olderTarget)
         if (why && await client.query('ROLLBACK TO SAVEPOINT sf_fix').then(() => true, () => false)) {
           unmet.push({ stmt, err, why })
           continue
@@ -732,7 +771,8 @@ export async function promote(options: PromoteOptions): Promise<PromoteResult> {
     return result
   }
 
-  await executeSql(dbUrl, sqlStatements, result, transactional)
+  await executeSql(dbUrl, sqlStatements, result, transactional,
+    options.sourceUrl ? await serverMajor(options.sourceUrl) : undefined)
 
   // A rolled-back batch leaves the target untouched, so the API calls that
   // would have gone with it must not fire either — they are not transactional

@@ -146,6 +146,17 @@ describe('unmetDependency', () => {
     expect(unmetDependency('ALTER TABLE t ALTER COLUMN c TYPE int', err('0A000'))).toBeUndefined()
   })
 
+  // A newer source writes what an older target cannot parse: UNIQUE NULLS NOT
+  // DISTINCT before 15, a VIRTUAL column before 18, security_invoker before
+  // 15. On such a target that fix is left out, like one needing an extension
+  // it lacks; on a target as new as the source it is still a real failure.
+  it('accepts a syntax, feature or parameter an older target does not have', () => {
+    for (const code of ['42601', '0A000', '22023']) {
+      expect(unmetDependency('CREATE TABLE t (c text UNIQUE NULLS NOT DISTINCT)', err(code), true), code).toContain('older')
+      expect(unmetDependency('CREATE TABLE t (c text UNIQUE NULLS NOT DISTINCT)', err(code), false), code).toBeUndefined()
+    }
+  })
+
   it('rejects every other failure', () => {
     expect(unmetDependency('CREATE TABLE t (id int)', err('42P07'))).toBeUndefined()
     expect(unmetDependency('ALTER TABLE t ADD CONSTRAINT u UNIQUE (id)', err('23505'))).toBeUndefined()
