@@ -8,6 +8,7 @@ import type { DriftIssue } from './types/drift'
 import { errMsg, friendlyDbError, DiagnosticError } from './utils/error'
 import { DBDIFF_EXEC_TIMEOUT_MS, DBDIFF_MAX_BUFFER } from './constants'
 import { schemaDiffIgnores } from './defaults'
+import { PLATFORM_ROLES } from './checks/roles'
 import { parseStatements, names, relationName, type Statement } from './sql-ast.js'
 import { sqlSkeleton, policiesRemoved } from './sql-deps'
 import { escapeRegex } from './utils/strings'
@@ -767,6 +768,20 @@ function unfoldedIssues(
  * "<Kind> modified"; anything else by its leading statement, which for a
  * table change is its first ALTER TABLE rather than a view it stands aside.
  */
+/**
+ * Default privileges for a role the platform owns — supabase_admin's, the
+ * auth and storage admins' — are Supabase's, like their grants: they differ
+ * between a Supabase project and plain PostgreSQL or between Supabase
+ * versions, and `postgres` cannot change them, so offering to failed the
+ * whole apply. `postgres`'s own are the project's.
+ */
+function platformDefaultPrivileges(sql: string): boolean {
+  const role = /^\s*ALTER\s+DEFAULT\s+PRIVILEGES\s+FOR\s+ROLE\s+("(?:[^"]|"")+"|[\w$]+)/i.exec(sql)?.[1]
+  if (!role) return false
+  const name = role.startsWith('"') ? role.slice(1, -1).replace(/""/g, '"') : role.toLowerCase()
+  return name !== 'postgres' && PLATFORM_ROLES.includes(name)
+}
+
 function issuesFromUnits(
   upUnits: DbDiffUnit[],
   downUnits: DbDiffUnit[],
@@ -775,7 +790,8 @@ function issuesFromUnits(
   ignoredSchemaTables?: Set<string>,
 ): DriftIssue[] {
   const pairs = pairUnits(upUnits, downUnits).filter(({ up, down }) =>
-    !(ignoreSchemas?.length && isCrossSchemaFkUnit(up, down, ignoreSchemas, ignoredSchemaTables)))
+    !(ignoreSchemas?.length && isCrossSchemaFkUnit(up, down, ignoreSchemas, ignoredSchemaTables))
+    && !platformDefaultPrivileges(up.sql))
 
   return pairs.map(({ up, down }, i) => {
     const upSql = up.sql

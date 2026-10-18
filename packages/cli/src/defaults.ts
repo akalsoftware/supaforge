@@ -43,8 +43,10 @@ export const SUPABASE_PLATFORM_SCHEMAS = [
  * schema is compared.
  */
 export function schemaDiffIgnores(ignoreSchemas: readonly string[] = DEFAULT_IGNORE_SCHEMAS): string[] {
+  // pgmq's tables are its queues, which the queues check compares through
+  // pgmq itself.
   return [...new Set([...ignoreSchemas, ...SUPABASE_PLATFORM_SCHEMAS.filter(s => !DEFAULT_IGNORE_SCHEMAS.includes(s)),
-    '_realtime', '_analytics', 'pgsodium_masks'])]
+    '_realtime', '_analytics', 'pgsodium_masks', 'pgmq'])]
 }
 
 /** Hint text shown during `supaforge init` to guide users through the Supabase UI. */

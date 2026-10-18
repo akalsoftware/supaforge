@@ -325,3 +325,21 @@ describe('dbdiffNotices', () => {
       .toEqual(['Operator objects are not compared (source 1, target 0: ===) — check them by hand'])
   })
 })
+
+// supabase_admin's default privileges are Supabase's, and postgres cannot
+// change them: offered as a fix, they failed the whole apply.
+describe('default privileges a platform role holds', () => {
+  const defaults = (role: string) => units(['AlterDefaultPrivileges', `${role}.public.tables`,
+    `ALTER DEFAULT PRIVILEGES FOR ROLE "${role}" IN SCHEMA "public" REVOKE SELECT ON TABLES FROM "anon";`])
+
+  it('are left out', () => {
+    expect(sqlToIssues({ up: defaults('supabase_admin'), down: defaults('supabase_admin') }, 'schema')).toEqual([])
+  })
+
+  it('but postgres\'s, and any other role\'s, are the project\'s', () => {
+    for (const role of ['postgres', 'app_owner']) {
+      expect(sqlToIssues({ up: defaults(role), down: defaults(role) }, 'schema').map(i => i.title))
+        .toEqual([`Default privileges differ: ${role} in public on tables`])
+    }
+  })
+})
