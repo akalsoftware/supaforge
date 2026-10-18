@@ -42,6 +42,16 @@ describe('platformOwnedObject by subject', () => {
 })
 
 describe('tolerableFailure', () => {
+  // A snapshot of PostgreSQL 18 holds a VIRTUAL generated column, which 17
+  // cannot parse: into an older server that statement is left out, and the
+  // restore goes on; into one as new it is still a real failure.
+  it('leaves out what an older server has no syntax for, only when it is older', () => {
+    const err = Object.assign(new Error('syntax error at or near ")"'), { code: '42601' })
+    const sql = 'CREATE TABLE public.v (a integer, b integer GENERATED ALWAYS AS ((a * 2)));'
+    expect(tolerableFailure(sql, err, new Set(), new Set(), new Map(), true)).toContain('older than the snapshot')
+    expect(tolerableFailure(sql, err, new Set(), new Set(), new Map(), false)).toBeUndefined()
+  })
+
   const plain = new Set(['public', 'pg_catalog', 'information_schema'])
   const supabase = new Set([...plain, 'auth', 'storage', 'graphql', 'extensions'])
   const missing = (what: string) => ({ code: '3F000', message: `schema "${what}" does not exist` })

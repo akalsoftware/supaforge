@@ -2,7 +2,7 @@ import pg from 'pg'
 import { newPgClient } from './db.js'
 import type { ScanResult, SyncAction } from './types/drift'
 import { errMsg } from './utils/error'
-import { ABSENT_ON_TARGET, EXTENSION_UNAVAILABLE, UNDEFINED_COLUMN, sqlState } from './pg-errors.js'
+import { ABSENT_ON_TARGET, EXTENSION_UNAVAILABLE, OLDER_SERVER, UNDEFINED_COLUMN, sqlState } from './pg-errors.js'
 import { destructiveReason } from './dbdiff'
 import { parseStatements } from './sql-ast'
 import { estimateLocks, lockBudgetWarning, readLockBudget } from './lock-budget.js'
@@ -636,13 +636,6 @@ export function revokesFromAbsent(sql: string): boolean {
   return targets.size === 1
 }
 
-/**
- * How an older server refuses what a newer one wrote: a syntax it does not
- * know (`UNIQUE NULLS NOT DISTINCT` before 15, a `VIRTUAL` column before 18),
- * a feature it lacks, a parameter it does not have (`security_invoker` before
- * 15). Taken as the target lacking it only when the target is older.
- */
-const OLDER_SERVER: ReadonlySet<string> = new Set(['42601', '0A000', '22023'])
 
 /** One transaction; true when it committed. */
 async function runBatch(

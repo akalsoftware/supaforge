@@ -17,7 +17,7 @@ import { dropUnsupportedSetStatements, knownParameters } from './prove'
 import { splitSqlStatements, isCommentOnly, isPsqlMetaCommand, stripPsqlMetaCommands } from './utils/sql-split'
 import { quoteIdent, quoteLiteral, quoteName } from './utils/sql.js'
 import { sqlSkeleton, statementSubject, rolesNamedBy } from './sql-deps.js'
-import { ABSENT_ON_TARGET, EXTENSION_UNAVAILABLE } from './pg-errors.js'
+import { ABSENT_ON_TARGET, EXTENSION_UNAVAILABLE, OLDER_SERVER } from './pg-errors.js'
 import { dataTablesInOrder, restoreBuckets, restoreTableRows } from './restore-data.js'
 import {
   replaceableSchemas, findExternalDependents, dropSchemaContents, recreateExternalDependents,
@@ -88,6 +88,15 @@ export interface RestoreResult {
   warnings?: string[]
 }
 
+/** Whether the snapshot's server, as pg_dump's header names it, is a newer major version than the target's. */
+async function snapshotIsNewer(snapshotDir: string, client: Pick<pg.Client, 'query'>): Promise<boolean> {
+  const head = (await readFile(join(snapshotDir, 'schema.sql'), 'utf-8').catch(() => '')).slice(0, 2000)
+  const dumped = /Dumped from database version (\d+)/.exec(head)?.[1]
+  if (!dumped) return false
+  const { rows: [row] } = await client.query<{ v: string }>(`SELECT current_setting('server_version_num') AS v`)
+  return Number(dumped) > Math.floor(Number(row?.v ?? 0) / 10000)
+}
+
 /** About how many locks replaying the snapshot's SQL layers in one transaction holds. */
 async function locksForSnapshot(
   snapshotDir: string,
@@ -149,6 +158,10 @@ export async function restoreFromSnapshot(options: RestoreOptions): Promise<Rest
   // previous state, with the errors reported only at the end (issue #95).
   // PostgreSQL has transactional DDL, so this is the same guarantee `--apply`
   // gives in promote().
+  // Whether the target runs an older PostgreSQL than the snapshot was taken
+  // from, read from pg_dump's header in schema.sql.
+  const olderTarget = await snapshotIsNewer(options.snapshotDir, client)
+
   const transactional = !options.noTransaction
   if (transactional) {
     const warning = lockBudgetWarning(
@@ -286,7 +299,7 @@ export async function restoreFromSnapshot(options: RestoreOptions): Promise<Rest
         }
 
         for (const sql of statements) {
-          await applyStatement(client, sql, transactional, result, missing, leftOut)
+          await applyStatement(client, sql, transactional, result, missing, leftOut, olderTarget)
         }
       } catch (err) {
         if (err instanceof RestoreAborted) throw err
@@ -818,10 +831,18 @@ export function tolerableFailure(
   targetSchemas: ReadonlySet<string>,
   missing: ReadonlySet<string> = new Set(),
   leftOut: ReadonlyMap<string, string> = new Map(),
+  olderTarget = false,
 ): string | undefined {
   const code = (err as { code?: string } | null)?.code
   if (!code) return undefined
   const skeleton = sqlSkeleton(sql)
+
+  // A snapshot of a newer server holds what an older one has no syntax or
+  // feature for: a VIRTUAL generated column before 18, UNIQUE NULLS NOT
+  // DISTINCT before 15. Left out and named, as a missing extension is.
+  if (olderTarget && OLDER_SERVER.has(code)) {
+    return `this server's PostgreSQL is older than the snapshot's and does not support it: ${errMsg(err)}`
+  }
 
   if (/^\s*CREATE\s+EXTENSION\b/i.test(skeleton)) {
     return EXTENSION_UNAVAILABLE.has(code)
@@ -899,6 +920,7 @@ async function applyStatement(
   result: RestoreResult,
   missing: Set<string>,
   leftOut: Map<string, string> = new Map(),
+  olderTarget = false,
 ): Promise<void> {
   if (transactional) await client.query('SAVEPOINT sf_restore_statement')
   try {
@@ -920,7 +942,7 @@ async function applyStatement(
     if (transactional) await client.query('ROLLBACK TO SAVEPOINT sf_restore_statement')
     const { rows } = await client.query<{ nspname: string }>('SELECT nspname FROM pg_namespace')
     const targetSchemas = new Set(rows.map(r => r.nspname))
-    const tolerated = tolerableFailure(sql, err, targetSchemas, missing, leftOut)
+    const tolerated = tolerableFailure(sql, err, targetSchemas, missing, leftOut, olderTarget)
     if (tolerated) {
       result.skipped.push({ type: 'sql', label: summarizeStatement(sql), reason: tolerated })
       // What this would have created, and why it is not there, for whatever
