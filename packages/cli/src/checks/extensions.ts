@@ -84,10 +84,13 @@ export function diffExtensions(source: PgExtension[], target: PgExtension[], rea
         sql: {
           // Into the schema it is in on the source, which plain PostgreSQL
           // may not have — Supabase's `extensions`. Made first; if the server
-          // does not ship the extension, the fix is left out with it.
-          up: ext.schema !== 'public'
-            ? `CREATE SCHEMA IF NOT EXISTS ${quoteName(ext.schema)};\nCREATE EXTENSION IF NOT EXISTS ${quoteName(name)} SCHEMA ${quoteName(ext.schema)};`
-            : `CREATE EXTENSION IF NOT EXISTS ${quoteName(name)};`,
+          // does not ship the extension, the fix is left out with it. A
+          // system schema (pg_cron's pg_catalog) is always there, and cannot
+          // be made.
+          up: ext.schema === 'public'
+            ? `CREATE EXTENSION IF NOT EXISTS ${quoteName(name)};`
+            : `${ext.schema.startsWith('pg_') ? '' : `CREATE SCHEMA IF NOT EXISTS ${quoteName(ext.schema)};\n`}`
+              + `CREATE EXTENSION IF NOT EXISTS ${quoteName(name)} SCHEMA ${quoteName(ext.schema)};`,
           down: `DROP EXTENSION IF EXISTS ${quoteName(name)};`,
         },
       })
