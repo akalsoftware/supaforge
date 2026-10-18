@@ -103,9 +103,95 @@ function poolFor(dbUrl: string): pg.Pool {
   return pool
 }
 
+/**
+ * A scan reads each database as of one instant.
+ *
+ * The checks run many queries, concurrently, over seconds or minutes; a
+ * change made meanwhile — a migration, a policy someone adds — was seen by
+ * some and not others, and the report described a database that never
+ * existed. While a database is held (holdSnapshot), one connection keeps a
+ * REPEATABLE READ, READ ONLY transaction open that exports its snapshot, and
+ * each pooled connection joins it once, in a REPEATABLE READ transaction of
+ * its own — not read only, so a definition can still be rendered with a
+ * temporary object, inside a savepoint. A query that fails ends that
+ * connection's transaction; it is rolled back and joins again next time.
+ *
+ * As with pg_dump, what the reads lock stays locked until the scan ends, so
+ * releaseSnapshots() runs before anything is applied.
+ */
+const snapshots = new Map<string, { id: string; anchor: pg.Client }>()
+const joined = new WeakMap<pg.PoolClient, string>()
+
+/** Read `dbUrl` as of one instant until releaseSnapshots(). False, and nothing held, when the server will not. */
+export async function holdSnapshot(dbUrl: string): Promise<boolean> {
+  if (snapshots.has(dbUrl)) return true
+  const anchor = newPgClient(dbUrl)
+  try {
+    await anchor.connect()
+    await anchor.query('BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY')
+    const { rows: [row] } = await anchor.query<{ id: string }>('SELECT pg_export_snapshot() AS id')
+    snapshots.set(dbUrl, { id: row.id, anchor })
+    return true
+  } catch {
+    await anchor.end().catch(() => undefined)
+    return false
+  }
+}
+
+/** The snapshot `dbUrl` is read as of, while it is held. */
+export function heldSnapshot(dbUrl: string): string | undefined {
+  return snapshots.get(dbUrl)?.id
+}
+
+/**
+ * Let every held database go. The pools reading them are closed with them:
+ * their connections sit in the snapshot's transactions.
+ */
+export async function releaseSnapshots(): Promise<void> {
+  const held = [...snapshots.entries()]
+  snapshots.clear()
+  await Promise.all(held.map(async ([dbUrl, { anchor }]) => {
+    const pool = pools.get(dbUrl)
+    pools.delete(dbUrl)
+    await pool?.end().catch(() => undefined)
+    await anchor.end().catch(() => undefined)
+  }))
+}
+
+/** A pooled connection, in the held snapshot's transaction when `dbUrl` is held. */
+async function connectionFor(dbUrl: string): Promise<pg.PoolClient> {
+  const client = await poolFor(dbUrl).connect()
+  const id = snapshots.get(dbUrl)?.id
+  if (id && joined.get(client) !== id) {
+    try {
+      await client.query(`BEGIN ISOLATION LEVEL REPEATABLE READ; SET TRANSACTION SNAPSHOT '${id.replace(/'/g, "''")}'`)
+      joined.set(client, id)
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined)
+      client.release()
+      throw err
+    }
+  }
+  return client
+}
+
 export const pgQuery: QueryFn = async (dbUrl, sql, params) => {
-  const { rows } = await poolFor(dbUrl).query(sql, params)
-  return rows
+  if (!snapshots.has(dbUrl)) {
+    const { rows } = await poolFor(dbUrl).query(sql, params)
+    return rows
+  }
+  const client = await connectionFor(dbUrl)
+  try {
+    const { rows } = await client.query(sql, params)
+    return rows
+  } catch (err) {
+    // The transaction is over for this connection; it joins again next time.
+    await client.query('ROLLBACK').catch(() => undefined)
+    joined.delete(client)
+    throw err
+  } finally {
+    client.release()
+  }
 }
 
 /**
@@ -117,13 +203,18 @@ export async function inRolledBackTransaction<T>(
   dbUrl: string,
   fn: (client: pg.PoolClient) => Promise<T>,
 ): Promise<T> {
-  const client = await poolFor(dbUrl).connect()
+  const client = await connectionFor(dbUrl)
+  // Inside the held snapshot's transaction, a savepoint does what a
+  // transaction of its own would.
+  const [begin, undo] = joined.has(client)
+    ? ['SAVEPOINT sf_scratch', 'ROLLBACK TO SAVEPOINT sf_scratch']
+    : ['BEGIN', 'ROLLBACK']
   try {
-    await client.query('BEGIN')
+    await client.query(begin)
     try {
       return await fn(client)
     } finally {
-      await client.query('ROLLBACK').catch(() => undefined)
+      await client.query(undo).catch(() => undefined)
     }
   } finally {
     client.release()

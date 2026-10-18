@@ -1,3 +1,4 @@
+import { holdSnapshot, releaseSnapshots } from './db.js'
 import { policyOnlyKeys, sqlSkeleton } from './sql-deps.js'
 import { splitSqlStatements } from './utils/sql-split.js'
 import type { HookBus } from './hooks'
@@ -32,6 +33,11 @@ export interface ScanOptions {
    * Merged with the config's own `checks.tables` / `checks.excludeTables`.
    */
   tableFilter?: TableFilter
+  /**
+   * Read each database as of one instant (see holdSnapshot). On by default;
+   * what the scan reads stays locked until it ends, as with pg_dump.
+   */
+  snapshot?: boolean
 }
 
 /**
@@ -203,9 +209,17 @@ export async function scan(
     }
   }
 
-  await Promise.all(
-    Array.from({ length: Math.min(checkConcurrency(), total) }, () => worker()),
-  )
+  // Each side read as of one instant, and let go before anything is applied.
+  if (options.snapshot !== false) {
+    await Promise.all([source?.dbUrl, target?.dbUrl].filter(Boolean).map(url => holdSnapshot(url as string)))
+  }
+  try {
+    await Promise.all(
+      Array.from({ length: Math.min(checkConcurrency(), total) }, () => worker()),
+    )
+  } finally {
+    if (options.snapshot !== false) await releaseSnapshots()
+  }
 
   foldDuplicatePolicyFindings(results)
   foldDuplicateExtensionFindings(results)
