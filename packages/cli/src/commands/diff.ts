@@ -241,6 +241,7 @@ export default class Diff extends BaseCommand {
    */
   private renderApplyResult(result: PromoteResult, dryRun: boolean): void {
     const verb = dryRun ? 'Would apply' : 'Applied'
+    for (const warning of result.warnings ?? []) this.log(`${warn(warning)}\n`)
     if (result.applied.length > 0) {
       const heading = `${verb} ${result.applied.length} fix(es)${dryRun ? ', in this order' : ''}:`
       this.log(dryRun ? bold(heading) : ok(heading))

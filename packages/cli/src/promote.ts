@@ -5,6 +5,7 @@ import { errMsg } from './utils/error'
 import { ABSENT_ON_TARGET, EXTENSION_UNAVAILABLE, UNDEFINED_COLUMN, sqlState } from './pg-errors.js'
 import { destructiveReason } from './dbdiff'
 import { parseStatements } from './sql-ast'
+import { estimateLocks, lockBudgetWarning, readLockBudget } from './lock-budget.js'
 import {
   orderStatements, referencedTables,
   createdPolicies, createsOnlyPolicies,
@@ -85,6 +86,8 @@ export interface PromoteResult {
    * lists what is actually in the target now.
    */
   rolledBack?: (FixOrigin & { sql?: string })[]
+  /** Said before the fixes ran: they may need more locks than the target has — see lock-budget. */
+  warnings?: string[]
 }
 
 interface PlannedWork {
@@ -556,6 +559,9 @@ async function runInTransaction(
 ): Promise<void> {
   const additions = statements.filter(s => isEnumValueAddition(s.sql))
   const rest = statements.filter(s => !isEnumValueAddition(s.sql))
+
+  const warning = lockBudgetWarning(estimateLocks(rest.map(s => s.sql)), await readLockBudget(client), 'This apply')
+  if (warning) result.warnings = [...(result.warnings ?? []), warning]
 
   if (additions.length > 0 && !(await runBatch(client, additions, result))) return
   await runBatch(client, rest, result)

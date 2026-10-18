@@ -197,7 +197,9 @@ the output.
 - **Targets.** Restore runs as one transaction and expects an empty database.
   `--force` clears the snapshot's own schemas first (never Supabase's) and
   puts back the triggers and policies outside them that depended on what it
-  cleared.
+  cleared. A restore or apply that looks likely to need more locks than the
+  target allows in one transaction says so before it starts;
+  `--no-transaction` commits as it goes instead.
 - **Plain PostgreSQL.** Restoring into plain PostgreSQL works. What can't
   exist there is skipped and named: a foreign key to `auth.users`, a webhook,
   an extension the server doesn't ship, and everything that needs it.

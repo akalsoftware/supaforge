@@ -3,6 +3,7 @@ import { constants } from 'node:fs'
 import { join } from 'node:path'
 import pg from 'pg'
 import { newPgClient } from './db.js'
+import { estimateLocks, lockBudgetWarning, readLockBudget } from './lock-budget.js'
 import type { MigrationFile, SnapshotManifest } from './types/config'
 import { loadMigrations } from './migration'
 import { MIGRATIONS_TABLE } from './constants.js'
@@ -83,6 +84,23 @@ export interface RestoreResult {
    * most misleading thing this command could tell anyone (issue #95).
    */
   rolledBack?: { type: 'sql' | 'api'; label: string }[]
+  /** Said before the restore started: it may need more locks than the target has — see lock-budget. */
+  warnings?: string[]
+}
+
+/** About how many locks replaying the snapshot's SQL layers in one transaction holds. */
+async function locksForSnapshot(
+  snapshotDir: string,
+  layers: readonly string[],
+  manifest: Awaited<ReturnType<typeof loadSnapshot>>,
+): Promise<number> {
+  const statements: string[] = []
+  for (const layer of layers) {
+    if (!manifest.layers[layer === 'storage-policies' ? 'storage' : layer]?.captured) continue
+    const raw = await readFile(join(snapshotDir, layerRestoreFile(layer)), 'utf-8').catch(() => '')
+    statements.push(...extractExecutableStatements(raw))
+  }
+  return estimateLocks(statements)
 }
 
 // ─── Safety Check ────────────────────────────────────────────────────────────
@@ -132,7 +150,15 @@ export async function restoreFromSnapshot(options: RestoreOptions): Promise<Rest
   // PostgreSQL has transactional DDL, so this is the same guarantee `--apply`
   // gives in promote().
   const transactional = !options.noTransaction
-  if (transactional) await client.query('BEGIN')
+  if (transactional) {
+    const warning = lockBudgetWarning(
+      await locksForSnapshot(options.snapshotDir, sqlOrder, manifest),
+      await readLockBudget(client),
+      'This restore',
+    )
+    if (warning) result.warnings = [warning]
+    await client.query('BEGIN')
+  }
 
   /** What the target turned out to lack — see tolerableFailure. */
   const missing = new Set<string>()
