@@ -23,12 +23,12 @@ interface PgRole {
  * syntax; a sequence and a routine each need their own keyword, and a
  * routine its argument types, since overloads share a name.
  */
-type ObjectKind = 'table' | 'sequence' | 'function' | 'procedure'
+type ObjectKind = 'table' | 'sequence' | 'function' | 'procedure' | 'schema'
 
 interface RoleGrant {
   grantee: string
   table_schema: string
-  /** The object's name; for a routine, without its arguments. */
+  /** The object's name; for a routine, without its arguments; empty for a schema. */
   table_name: string
   privilege_type: string
   is_grantable: boolean
@@ -133,6 +133,34 @@ const grantsSql = (ignoreSchemas: string[]) => `
     AND (a.grantee = 0 OR pg_get_userbyid(a.grantee) NOT IN (${quoted(PLATFORM_ROLES)}))
     AND (a.grantee = 0 OR pg_get_userbyid(a.grantee) NOT LIKE 'pg_%')
   ORDER BY 1, 2, 3, 4
+`
+
+/**
+ * Grants on schemas, read from `nspacl`: `USAGE` on a schema of its own is
+ * what lets `authenticated` reach the tables in it through the Data API at
+ * all. A schema an extension made is the extension's.
+ */
+const schemaGrantsSql = (ignoreSchemas: string[]) => `
+  SELECT CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END AS grantee,
+         n.nspname AS table_schema, '' AS table_name,
+         a.privilege_type, a.is_grantable, 'schema' AS object_kind
+  FROM pg_namespace n
+  CROSS JOIN LATERAL aclexplode(n.nspacl) a
+  WHERE n.nspacl IS NOT NULL
+    AND a.grantee <> n.nspowner
+    AND n.nspname ${grantSchemaFilter(ignoreSchemas)}
+    AND n.nspname NOT LIKE 'pg\\_%' AND n.nspname <> 'information_schema'
+    AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_namespace'::regclass AND d.objid = n.oid AND d.deptype = 'e')
+    AND (a.grantee = 0 OR pg_get_userbyid(a.grantee) NOT IN (${quoted(PLATFORM_ROLES)}))
+    AND (a.grantee = 0 OR pg_get_userbyid(a.grantee) NOT LIKE 'pg_%')
+  ORDER BY 1, 2, 4
+`
+
+/** Schemas, as objects whose grants go with them. */
+const schemasSql = (ignoreSchemas: string[]) => `
+  SELECT nspname AS table_schema, '' AS table_name, 'schema' AS object_kind
+  FROM pg_namespace
+  WHERE nspname ${grantSchemaFilter(ignoreSchemas)}
 `
 
 /**
@@ -241,6 +269,7 @@ type DefaultGrant = {
 
 /** The object a grant or relation names, with its kind and a routine's arguments. */
 function objectKey(o: { table_schema: string; table_name: string; object_kind?: ObjectKind; args?: string | null }): string {
+  if (o.object_kind === 'schema') return `schema:${o.table_schema}`
   const routine = o.object_kind === 'function' || o.object_kind === 'procedure'
   return `${routine ? 'routine' : o.object_kind ?? 'table'}:${o.table_schema}.${o.table_name}${routine ? `(${o.args ?? ''})` : ''}`
 }
@@ -351,6 +380,7 @@ export class RolesCheck extends Check {
       sourceRoles, targetRoles, sourceGrants, targetGrants, sourceColumns, targetColumns,
       sourceVersion, targetVersion, sourceRelations, targetRelations, targetDefaults,
       sourceRoutineGrants, targetRoutineGrants, sourceRoutines, targetRoutines,
+      sourceSchemaGrants, targetSchemaGrants, sourceSchemas,
     ] = await Promise.all([
       this.queryFn(ctx.source.dbUrl, ROLES_SQL) as unknown as Promise<PgRole[]>,
       this.queryFn(ctx.target.dbUrl, ROLES_SQL) as unknown as Promise<PgRole[]>,
@@ -367,16 +397,19 @@ export class RolesCheck extends Check {
       this.queryFn(ctx.target.dbUrl, functionGrantsSql(ignore)) as unknown as Promise<RoleGrant[]>,
       this.queryFn(ctx.source.dbUrl, routinesSql(ignore)) as unknown as Promise<Relation[]>,
       this.queryFn(ctx.target.dbUrl, routinesSql(ignore)) as unknown as Promise<Relation[]>,
+      this.queryFn(ctx.source.dbUrl, schemaGrantsSql(ignore)) as unknown as Promise<RoleGrant[]>,
+      this.queryFn(ctx.target.dbUrl, schemaGrantsSql(ignore)) as unknown as Promise<RoleGrant[]>,
+      this.queryFn(ctx.source.dbUrl, schemasSql(ignore)) as unknown as Promise<Relation[]>,
     ])
-    const sourceObjects = [...(sourceRelations ?? []), ...(sourceRoutines ?? [])]
+    const sourceObjects = [...(sourceRelations ?? []), ...(sourceRoutines ?? []), ...(sourceSchemas ?? [])]
     const targetObjects = [...(targetRelations ?? []), ...(targetRoutines ?? [])]
-    const sourceAll = [...(sourceGrants ?? []), ...(sourceRoutineGrants ?? [])]
-    // A routine or sequence only the target has is the schema check's finding,
-    // and its grants go with it. Every routine grants EXECUTE to PUBLIC unless
+    const sourceAll = [...(sourceGrants ?? []), ...(sourceRoutineGrants ?? []), ...(sourceSchemaGrants ?? [])]
+    // A routine, sequence or schema only the target has is the schema check's
+    // finding, and its grants go with it. Every routine grants EXECUTE to PUBLIC unless
     // told otherwise, so each one present on the target alone was reported
     // again as an extra grant.
     const inSource = new Set(sourceObjects.map(objectKey))
-    const targetAll = [...(targetGrants ?? []), ...(targetRoutineGrants ?? [])]
+    const targetAll = [...(targetGrants ?? []), ...(targetRoutineGrants ?? []), ...(targetSchemaGrants ?? [])]
       .filter(g => !g.object_kind || g.object_kind === 'table' || inSource.has(objectKey(g)))
     const comparable = comparablePrivileges(sourceVersion, targetVersion)
     const byDefault = grantedByDefault(targetObjects, targetDefaults ?? [])
@@ -500,6 +533,7 @@ function grantKey(g: RoleGrant): string {
 function objectSql(g: RoleGrant): string {
   const name = `${quoteName(g.table_schema)}.${quoteName(g.table_name)}`
   switch (g.object_kind) {
+    case 'schema': return `SCHEMA ${quoteName(g.table_schema)}`
     case 'sequence': return `SEQUENCE ${name}`
     case 'function': return `FUNCTION ${name}(${g.args ?? ''})`
     case 'procedure': return `PROCEDURE ${name}(${g.args ?? ''})`
@@ -511,6 +545,7 @@ function objectSql(g: RoleGrant): string {
 function describeObject(g: RoleGrant): string {
   const name = `${g.table_schema}.${g.table_name}`
   switch (g.object_kind) {
+    case 'schema': return `schema ${g.table_schema}`
     case 'sequence': return `sequence ${name}`
     case 'function': return `function ${name}(${g.args ?? ''})`
     case 'procedure': return `procedure ${name}(${g.args ?? ''})`
@@ -548,7 +583,12 @@ const revokeSql = (g: RoleGrant) => `REVOKE ${grantTarget(g)} FROM ${granteeSql(
  */
 export function comparablePrivileges(sourceVersion: number, targetVersion: number): (g: RoleGrant) => boolean {
   const both = Math.min(sourceVersion || Infinity, targetVersion || Infinity)
-  return g => g.privilege_type !== 'MAINTAIN' || both >= 170000
+  // PostgreSQL 15 stopped granting CREATE on `public` to everyone. Across that
+  // line the difference is each version's default, and copying the old one
+  // into a newer server would undo its hardening.
+  const acrossFifteen = Boolean(sourceVersion && targetVersion) && (sourceVersion < 150000) !== (targetVersion < 150000)
+  return g => (g.privilege_type !== 'MAINTAIN' || both >= 170000)
+    && !(acrossFifteen && g.object_kind === 'schema' && g.table_schema === 'public' && g.grantee === 'PUBLIC' && g.privilege_type === 'CREATE')
 }
 
 /** Grants that differ the same way, on one table (or column) to one role, as one finding. */
