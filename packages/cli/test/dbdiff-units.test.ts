@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
+import { setSnapshotsOff } from '../src/db.js'
 import { pairUnits, parseUnits } from '../src/dbdiff-units.js'
 import { buildDbDiffArgs, dbdiffNotices, destructiveReason, sqlToIssues, schemaNotices } from '../src/dbdiff.js'
 
@@ -341,5 +342,20 @@ describe('default privileges a platform role holds', () => {
       expect(sqlToIssues({ up: defaults(role), down: defaults(role) }, 'schema').map(i => i.title))
         .toEqual([`Default privileges differ: ${role} in public on tables`])
     }
+  })
+})
+
+// The scan's instant, or none under --no-snapshot, reaches @dbdiff/cli.
+describe('buildDbDiffArgs and snapshots', () => {
+  const opts = { sourceUrl: 'postgres://s', targetUrl: 'postgres://t', type: 'schema' as const, include: 'both' as const }
+  afterEach(() => setSnapshotsOff(false))
+
+  it('names no snapshot when the scan holds none', () => {
+    expect(buildDbDiffArgs(opts, '/tmp/o.sql').filter(a => /snapshot/.test(a))).toEqual([])
+  })
+
+  it('passes --no-snapshot when the scan reads each query on its own', () => {
+    setSnapshotsOff(true)
+    expect(buildDbDiffArgs(opts, '/tmp/o.sql')).toContain('--no-snapshot')
   })
 })

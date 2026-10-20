@@ -8,6 +8,7 @@ import type { DriftIssue } from './types/drift'
 import { errMsg, friendlyDbError, DiagnosticError } from './utils/error'
 import { DBDIFF_EXEC_TIMEOUT_MS, DBDIFF_MAX_BUFFER } from './constants'
 import { schemaDiffIgnores } from './defaults'
+import { heldSnapshot, snapshotsOff } from './db.js'
 import { PLATFORM_ROLES } from './checks/roles'
 import { parseStatements, names, relationName, type Statement } from './sql-ast.js'
 import { sqlSkeleton, policiesRemoved } from './sql-deps'
@@ -187,6 +188,16 @@ export function stripDbDiffNoise(text: string): string {
  * Split out of runDbDiff() so the flag surface is one readable unit and can be
  * asserted directly in tests, rather than only through a spawned process.
  */
+function snapshotArgs(sourceUrl: string, targetUrl: string): string[] {
+  if (snapshotsOff()) return ['--no-snapshot']
+  const source = heldSnapshot(sourceUrl)
+  const target = heldSnapshot(targetUrl)
+  return [
+    ...(source ? [`--source-snapshot=${source}`] : []),
+    ...(target ? [`--target-snapshot=${target}`] : []),
+  ]
+}
+
 export function buildDbDiffArgs(options: DbDiffOptions, outputFile: string): string[] {
   const args = [
     'diff',
@@ -199,6 +210,9 @@ export function buildDbDiffArgs(options: DbDiffOptions, outputFile: string): str
     // public interface and did nothing.
     `--include=${options.include}`,
     '--nocomments',
+    // The instant the scan reads each side as of, so the schema and data
+    // diffs see what every other check does; or none, under --no-snapshot.
+    ...snapshotArgs(options.sourceUrl, options.targetUrl),
     // @dbdiff/cli >= 3.0.0-rc.3 refuses to emit a migration containing
     // DROP TABLE or DROP COLUMN unless this is passed, exiting non-zero and
     // writing no output file. SupaForge is a *detection* tool: an extra table

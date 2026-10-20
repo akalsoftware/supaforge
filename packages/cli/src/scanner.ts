@@ -1,4 +1,4 @@
-import { holdSnapshot, releaseSnapshots } from './db.js'
+import { holdSnapshot, releaseSnapshots, setSnapshotsOff } from './db.js'
 import { policyOnlyKeys, sqlSkeleton } from './sql-deps.js'
 import { splitSqlStatements } from './utils/sql-split.js'
 import type { HookBus } from './hooks'
@@ -210,6 +210,7 @@ export async function scan(
   }
 
   // Each side read as of one instant, and let go before anything is applied.
+  setSnapshotsOff(options.snapshot === false)
   if (options.snapshot !== false) {
     await Promise.all([source?.dbUrl, target?.dbUrl].filter(Boolean).map(url => holdSnapshot(url as string)))
   }
