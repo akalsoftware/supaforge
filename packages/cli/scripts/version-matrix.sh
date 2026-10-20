@@ -39,17 +39,29 @@ start(){ local node=$1 c=$2 port=$3
   else
     docker run -d --name $c -p 127.0.0.1:$port:5432 -e POSTGRES_PASSWORD=rootpass "$(image $node)" >/dev/null
   fi
-  for _ in $(seq 180); do
-    q $(kind $node) $c $port postgres -c 'SELECT 1' >/dev/null 2>&1 && return 0
+  # Over TCP, three times running: on first start the image initialises the
+  # database with a server only its socket reaches, then restarts it.
+  local ok=0
+  for _ in $(seq 240); do
+    if ready $(kind $node) $c; then ok=$((ok + 1)); [ $ok -ge 3 ] && return 0; else ok=0; fi
     sleep 1
   done
   echo "$c did not start"; docker logs $c 2>&1 | tail -20; exit 1
 }
 
+ready(){ if [ $1 = sb ]; then docker exec -e PGPASSWORD=smokepass $2 psql -h localhost -U supabase_admin -d postgres -Atc 'SELECT 1' >/dev/null 2>&1
+  else docker exec $2 psql -h 127.0.0.1 -U postgres -d postgres -Atc 'SELECT 1' >/dev/null 2>&1; fi; }
+
 # psql as an admin on a node's database: q KIND CONTAINER PORT DB [psql args]
 q(){ local kind=$1 c=$2 p=$3 db=$4; shift 4
   if [ $kind = sb ]; then docker exec -i -e PGPASSWORD=smokepass $c psql -h localhost -U supabase_admin -d $db -q -X -At -v ON_ERROR_STOP=1 "$@"
   else docker exec -i $c psql -U postgres -d $db -q -X -At -v ON_ERROR_STOP=1 "$@"; fi; }
+
+# the same as the role SupaForge connects as (postgres on Supabase)
+qu(){ local kind=$1 c=$2 p=$3 db=$4; shift 4
+  if [ $kind = sb ]; then docker exec -i -e PGPASSWORD=smokepass $c psql -h localhost -U postgres -d $db -q -X -At -v ON_ERROR_STOP=1 "$@"
+  else q $kind $c $p $db "$@"; fi; }
+url(){ [ $1 = sb ] && echo "postgresql://postgres:smokepass@127.0.0.1:$3/postgres" || echo "postgres://postgres:rootpass@127.0.0.1:$3/$4"; }
 
 # The fixture, for a source of KIND and VERSION.
 fixture(){ local kind=$1 v=$2
@@ -210,7 +222,7 @@ pair(){ local s=$1 t=$2 name="$1>$2"
   reset $sk $sc $sp $sdb; reset $tk $tc $tp $tdb
   if ! fixture $sk $sv | qu $sk $sc $sp $sdb > $WS/fixture.log 2>&1 \
      || { [ $sk = sb ] && ! sb_admin_fixture | q sb $sc $sp $sdb >> $WS/fixture.log 2>&1; }; then
-    row "$name" setup "FAIL fixture: $(grep -m1 ERROR $WS/fixture.log)"; return; fi
+    row "$name" setup "FAIL fixture: $(grep -m1 -i error $WS/fixture.log)"; return; fi
   local rdb=mx_r
   printf '{ "environments": { "src": { "dbUrl": "%s" }, "tgt": { "dbUrl": "%s" }%s }, "source": "src", "target": "tgt", "checks": { "data": { "tables": ["mx_plans"] } } }\n' \
     "$(url $sk $sc $sp $sdb)" "$(url $tk $tc $tp $tdb)" "$([ $tk = pg ] && printf ', "rst": { "dbUrl": "%s" }' "$(url pg $tc $tp $rdb)")" > $WS/supaforge.config.json
