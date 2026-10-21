@@ -1905,3 +1905,51 @@ export function extractRoutineArgs(sql: string): string {
   }
   return ''
 }
+
+/** The roles a GRANT, REVOKE, ALTER DEFAULT PRIVILEGES or policy statement names, PUBLIC and built-in roles aside. */
+function rolesAddressed(sql: string): string[] {
+  const names = (specs: Array<Record<string, any>> = []) => specs
+    .map(s => s.RoleSpec)
+    .filter(r => r?.roletype === 'ROLESPEC_CSTRING' && typeof r.rolename === 'string' && !r.rolename.startsWith('pg_'))
+    .map(r => r.rolename as string)
+  return (parseStatements(sql) ?? []).flatMap(({ kind, node }) =>
+    kind === 'GrantStmt' ? names(node.grantees)
+      : kind === 'CreatePolicyStmt' || kind === 'AlterPolicyStmt' ? names(node.roles)
+      : kind === 'AlterDefaultPrivilegesStmt'
+        ? [...names(node.action?.grantees), ...names((node.options ?? [])
+          .filter((o: any) => o.DefElem?.defname === 'roles').flatMap((o: any) => o.DefElem.arg?.List?.items ?? []))]
+        : [])
+}
+
+/**
+ * Leave out of each fix the grants, revokes and policies that name a role
+ * the target does not have — Supabase's `anon` on plain PostgreSQL. A view
+ * replaced from Supabase carried its grants with it, and the GRANT failing
+ * took the view, and every view reading it, out of the apply; and --prove
+ * declined a migration naming such a role. The roles check reports grants to
+ * one on its own; a fix left with nothing says why.
+ */
+export function withoutAbsentRoles(issues: DriftIssue[], targetRoles: ReadonlySet<string>): DriftIssue[] {
+  const absentIn = (sql: string) => rolesAddressed(sql).filter(r => !targetRoles.has(r))
+  return issues.map(issue => {
+    if (!issue.sql) return issue
+    const missing = new Set<string>()
+    const keep = (sql: string) => splitStatements(sql).filter(statement => {
+      const absent = absentIn(statement)
+      absent.forEach(r => missing.add(r))
+      return absent.length === 0
+    })
+    const up = keep(issue.sql.up)
+    if (missing.size === 0) return issue
+    const down = keep(issue.sql.down ?? '')
+    const roles = [...missing].sort().join(', ') + (missing.size > 1 ? ', roles' : ', a role')
+    // Nothing left to apply: held back, its SQL kept so a proof can tell
+    // what stays different on purpose.
+    if (up.length === 0) return { ...issue, manualOnly: `it names ${roles} the target does not have` }
+    return {
+      ...issue,
+      description: `${issue.description} What it grants to ${roles} the target does not have is left out.`,
+      sql: { up: up.join('\n'), down: down.join('\n') },
+    }
+  })
+}

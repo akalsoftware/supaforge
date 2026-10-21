@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { setSnapshotsOff } from '../src/db.js'
 import { pairUnits, parseUnits } from '../src/dbdiff-units.js'
-import { buildDbDiffArgs, dbdiffNotices, destructiveReason, sqlToIssues, schemaNotices } from '../src/dbdiff.js'
+import { buildDbDiffArgs, dbdiffNotices, destructiveReason, sqlToIssues, schemaNotices, withoutAbsentRoles } from '../src/dbdiff.js'
 
 /** A section as `dbdiff --units` writes it. */
 function units(...parts: Array<[kind: string, object: string, sql: string]>): string {
@@ -357,5 +357,36 @@ describe('buildDbDiffArgs and snapshots', () => {
   it('passes --no-snapshot when the scan reads each query on its own', () => {
     setSnapshotsOff(true)
     expect(buildDbDiffArgs(opts, '/tmp/o.sql')).toContain('--no-snapshot')
+  })
+})
+
+// A view replaced from Supabase keeps its grants, to anon among them; on a
+// target without that role the GRANT failed, and the view went with it.
+describe('withoutAbsentRoles', () => {
+  const issue = (up: string, down = '') => ({ id: 'x', check: 'schema' as const, severity: 'warning' as const, title: 't', description: 'd.', sql: { up, down } })
+  const roles = new Set(['postgres', 'authenticator'])
+
+  it('leaves a grant to an absent role out of the fix, and keeps the rest', () => {
+    const [out] = withoutAbsentRoles([issue(
+      'DROP VIEW IF EXISTS "v";\nCREATE VIEW "v" AS SELECT 1;\nGRANT SELECT ON "v" TO "anon";\nGRANT SELECT ON "v" TO "postgres";',
+      'REVOKE SELECT ON "v" FROM "anon";\nDROP VIEW "v";')], roles)
+    expect(out.sql?.up).toBe('DROP VIEW IF EXISTS "v";\nCREATE VIEW "v" AS SELECT 1;\nGRANT SELECT ON "v" TO "postgres";')
+    expect(out.sql?.down).toBe('DROP VIEW "v";')
+    expect(out.description).toContain('anon, a role the target does not have')
+  })
+
+  it('reports a fix left with nothing, and why', () => {
+    const [out] = withoutAbsentRoles([issue('ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO anon, authenticated;')], roles)
+    expect(out.manualOnly).toBe('it names anon, authenticated, roles the target does not have')
+  })
+
+  it('leaves out a policy for an absent role', () => {
+    const [out] = withoutAbsentRoles([issue('CREATE POLICY "own" ON "t" FOR SELECT TO "authenticated" USING (true);')], roles)
+    expect(out.manualOnly).toBe('it names authenticated, a role the target does not have')
+  })
+
+  it('changes nothing when every role is there', () => {
+    const fix = issue('GRANT SELECT ON "v" TO "postgres", PUBLIC;')
+    expect(withoutAbsentRoles([fix], roles)).toEqual([fix])
   })
 })
