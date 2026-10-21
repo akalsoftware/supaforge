@@ -3,6 +3,9 @@ import { join } from 'node:path'
 import { Flags } from '@oclif/core'
 import { BaseCommand } from '../../base-command.js'
 import { runDbDiff, isDestructiveSql } from '../../dbdiff.js'
+import { RolesCheck } from '../../checks/roles.js'
+import type { CheckContext } from '../../checks/base.js'
+import { pgQuery } from '../../db.js'
 import { DEFAULT_IGNORE_SCHEMAS } from '../../defaults.js'
 import { ok, warn, dim, bold, cmd } from '../../ui.js'
 import { splitSqlStatements } from '../../utils/sql-split.js'
@@ -63,7 +66,14 @@ export default class MigrateCreate extends BaseCommand {
       ignoreSchemas,
     })
 
-    if (!result.up.trim()) {
+    // The grants on what it makes, written out: the file is replayed where
+    // default privileges differ — a new project, a preview branch, a local
+    // reset — and Supabase no longer grants the Data API roles on new tables.
+    const grants = (await new RolesCheck(pgQuery, { explicit: true }).scan({
+      source: sourceEnv, target: targetEnv, config,
+    } as CheckContext)).filter(i => i.id.startsWith('roles-grant-') && i.sql?.up)
+
+    if (!result.up.trim() && grants.length === 0) {
       this.log(`${ok('No schema drift detected.')} Nothing to write. ✓`)
       return
     }
@@ -91,15 +101,16 @@ export default class MigrateCreate extends BaseCommand {
         : []),
       '',
       result.up,
+      ...(grants.length > 0 ? ['', '-- Grants', ...grants.map(i => i.sql!.up)] : []),
     ]
 
-    if (result.down.trim()) {
+    if (result.down.trim() || grants.length > 0) {
       lines.push(
         '',
         '-- ==================== DOWN ====================',
         '-- To revert this migration, run the SQL below manually:',
         '--',
-        ...result.down.split('\n').map(l => `-- ${l}`),
+        ...[...grants.map(i => i.sql?.down ?? '').filter(Boolean).reverse(), result.down].join('\n').split('\n').map(l => `-- ${l}`),
       )
     }
 

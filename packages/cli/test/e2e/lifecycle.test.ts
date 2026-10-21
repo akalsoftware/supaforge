@@ -15,7 +15,7 @@
  * containers and workspaces up for inspection after a failure.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
-import { readdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { readdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PgHarness } from '../harness/PgHarness.js'
@@ -164,6 +164,29 @@ describeE2E('e2e: real-database lifecycle', () => {
       const r = await h.cli(['migrate', 'create', '-n', 'add_referral_code'], { cwd: ws })
       expect(r.code).toBe(0)
       expect(r.stdout + r.stderr).toMatch(/referral|migration/i)
+    }, 300_000)
+
+    // A migration is replayed where default privileges differ — Supabase no
+    // longer grants the Data API roles on new tables — so a table it makes
+    // carries its grants in the file, even where the target's defaults would
+    // have given them.
+    it('writes the grants on a new table into the file', async () => {
+      const role = "DO $$ BEGIN CREATE ROLE sf_api_reader NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END $$;"
+      await h.applySql('source', role + ' CREATE TABLE public.sf_granted (id int PRIMARY KEY); GRANT SELECT ON public.sf_granted TO sf_api_reader;')
+      await h.applySql('target', role + ' ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO sf_api_reader;')
+      const dir = await mkdtemp(join(tmpdir(), 'sf-migrations-'))
+      const mws = await h.workspace({ checks: { migrations: { dir } } })
+      try {
+        const r = await h.cli(['migrate', 'create', '-n', 'granted_table'], { cwd: mws })
+        expect(r.code, r.stdout + r.stderr).toBe(0)
+        const [file] = await readdir(dir)
+        const sql = await readFile(join(dir, file), 'utf8')
+        expect(sql).toContain('CREATE TABLE public.sf_granted')
+        expect(sql).toMatch(/GRANT SELECT ON "public"\."sf_granted" TO "sf_api_reader";/)
+      } finally {
+        await h.applySql('source', 'DROP TABLE IF EXISTS public.sf_granted;')
+        await h.applySql('target', 'ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE SELECT ON TABLES FROM sf_api_reader;')
+      }
     }, 300_000)
 
     // `migrate run` was the one writing command that executed when run bare;
