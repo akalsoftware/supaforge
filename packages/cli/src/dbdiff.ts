@@ -8,6 +8,7 @@ import type { DriftIssue } from './types/drift'
 import { errMsg, friendlyDbError, DiagnosticError } from './utils/error'
 import { DBDIFF_EXEC_TIMEOUT_MS, DBDIFF_MAX_BUFFER } from './constants'
 import { schemaDiffIgnores } from './defaults'
+import { heldSnapshot, snapshotsOff } from './db.js'
 import { PLATFORM_ROLES } from './checks/roles'
 import { parseStatements, names, relationName, type Statement } from './sql-ast.js'
 import { sqlSkeleton, policiesRemoved } from './sql-deps'
@@ -187,6 +188,16 @@ export function stripDbDiffNoise(text: string): string {
  * Split out of runDbDiff() so the flag surface is one readable unit and can be
  * asserted directly in tests, rather than only through a spawned process.
  */
+function snapshotArgs(sourceUrl: string, targetUrl: string): string[] {
+  if (snapshotsOff()) return ['--no-snapshot']
+  const source = heldSnapshot(sourceUrl)
+  const target = heldSnapshot(targetUrl)
+  return [
+    ...(source ? [`--source-snapshot=${source}`] : []),
+    ...(target ? [`--target-snapshot=${target}`] : []),
+  ]
+}
+
 export function buildDbDiffArgs(options: DbDiffOptions, outputFile: string): string[] {
   const args = [
     'diff',
@@ -199,6 +210,9 @@ export function buildDbDiffArgs(options: DbDiffOptions, outputFile: string): str
     // public interface and did nothing.
     `--include=${options.include}`,
     '--nocomments',
+    // The instant the scan reads each side as of, so the schema and data
+    // diffs see what every other check does; or none, under --no-snapshot.
+    ...snapshotArgs(options.sourceUrl, options.targetUrl),
     // @dbdiff/cli >= 3.0.0-rc.3 refuses to emit a migration containing
     // DROP TABLE or DROP COLUMN unless this is passed, exiting non-zero and
     // writing no output file. SupaForge is a *detection* tool: an extra table
@@ -1890,4 +1904,52 @@ export function extractRoutineArgs(sql: string): string {
     else if (sql[i] === ')' && --depth === 0) return sql.slice(open, i + 1)
   }
   return ''
+}
+
+/** The roles a GRANT, REVOKE, ALTER DEFAULT PRIVILEGES or policy statement names, PUBLIC and built-in roles aside. */
+function rolesAddressed(sql: string): string[] {
+  const names = (specs: Array<Record<string, any>> = []) => specs
+    .map(s => s.RoleSpec)
+    .filter(r => r?.roletype === 'ROLESPEC_CSTRING' && typeof r.rolename === 'string' && !r.rolename.startsWith('pg_'))
+    .map(r => r.rolename as string)
+  return (parseStatements(sql) ?? []).flatMap(({ kind, node }) =>
+    kind === 'GrantStmt' ? names(node.grantees)
+      : kind === 'CreatePolicyStmt' || kind === 'AlterPolicyStmt' ? names(node.roles)
+      : kind === 'AlterDefaultPrivilegesStmt'
+        ? [...names(node.action?.grantees), ...names((node.options ?? [])
+          .filter((o: any) => o.DefElem?.defname === 'roles').flatMap((o: any) => o.DefElem.arg?.List?.items ?? []))]
+        : [])
+}
+
+/**
+ * Leave out of each fix the grants, revokes and policies that name a role
+ * the target does not have — Supabase's `anon` on plain PostgreSQL. A view
+ * replaced from Supabase carried its grants with it, and the GRANT failing
+ * took the view, and every view reading it, out of the apply; and --prove
+ * declined a migration naming such a role. The roles check reports grants to
+ * one on its own; a fix left with nothing says why.
+ */
+export function withoutAbsentRoles(issues: DriftIssue[], targetRoles: ReadonlySet<string>): DriftIssue[] {
+  const absentIn = (sql: string) => rolesAddressed(sql).filter(r => !targetRoles.has(r))
+  return issues.map(issue => {
+    if (!issue.sql) return issue
+    const missing = new Set<string>()
+    const keep = (sql: string) => splitStatements(sql).filter(statement => {
+      const absent = absentIn(statement)
+      absent.forEach(r => missing.add(r))
+      return absent.length === 0
+    })
+    const up = keep(issue.sql.up)
+    if (missing.size === 0) return issue
+    const down = keep(issue.sql.down ?? '')
+    const roles = [...missing].sort().join(', ') + (missing.size > 1 ? ', roles' : ', a role')
+    // Nothing left to apply: held back, its SQL kept so a proof can tell
+    // what stays different on purpose.
+    if (up.length === 0) return { ...issue, manualOnly: `it names ${roles} the target does not have` }
+    return {
+      ...issue,
+      description: `${issue.description} What it grants to ${roles} the target does not have is left out.`,
+      sql: { up: up.join('\n'), down: down.join('\n') },
+    }
+  })
 }

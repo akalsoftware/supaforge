@@ -1,7 +1,7 @@
 import type { QueryFn } from '../db'
 import { pgQuery } from '../db'
 import type { DriftIssue } from '../types/drift'
-import { runDbDiff, schemaNotices, sqlToIssues, type DbDiffOptions } from '../dbdiff'
+import { runDbDiff, schemaNotices, sqlToIssues, withoutAbsentRoles, type DbDiffOptions } from '../dbdiff'
 import { Check, CheckSkipped, type CheckContext } from './base'
 import { DEFAULT_IGNORE_SCHEMAS } from '../defaults'
 
@@ -48,7 +48,9 @@ export class SchemaCheck extends Check {
         this.fetchIgnoredSchemaTables(ctx.target.dbUrl, ignoreSchemas),
       ])
       for (const notice of schemaNotices(result.notices ?? [])) ctx.onNotice?.(notice)
-      return sqlToIssues(result, 'schema', ignoreSchemas, ignoredSchemaTables)
+      const issues = sqlToIssues(result, 'schema', ignoreSchemas, ignoredSchemaTables)
+      const roles = await this.targetRoles(ctx.target.dbUrl)
+      return roles?.size ? withoutAbsentRoles(issues, roles) : issues
     } catch (err) {
       if (err instanceof Error && err.message.includes('@dbdiff/cli is not installed')) {
         throw new CheckSkipped('@dbdiff/cli is not installed')
@@ -67,6 +69,16 @@ export class SchemaCheck extends Check {
    * Returns a Set of lowercase table names, bare and schema-qualified. Fails silently so that a transient
    * DB error here never blocks the main schema diff.
    */
+  /** The target's roles, or undefined when they cannot be read. */
+  private async targetRoles(dbUrl: string): Promise<Set<string> | undefined> {
+    try {
+      const rows = await this.queryFn(dbUrl, 'SELECT rolname FROM pg_roles') as Array<{ rolname: string }>
+      return new Set(rows.map(r => r.rolname))
+    } catch {
+      return undefined
+    }
+  }
+
   async fetchIgnoredSchemaTables(dbUrl: string, ignoreSchemas: string[]): Promise<Set<string>> {
     if (ignoreSchemas.length === 0) return new Set()
     try {

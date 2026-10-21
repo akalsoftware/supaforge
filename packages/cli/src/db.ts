@@ -120,6 +120,16 @@ function poolFor(dbUrl: string): pg.Pool {
  * releaseSnapshots() runs before anything is applied.
  */
 const snapshots = new Map<string, { id: string; anchor: pg.Client }>()
+let readAlone = false
+
+/** Read each query on its own, as --no-snapshot asks, here and in @dbdiff/cli. */
+export function setSnapshotsOff(off: boolean): void {
+  readAlone = off
+}
+
+export function snapshotsOff(): boolean {
+  return readAlone
+}
 const joined = new WeakMap<pg.PoolClient, string>()
 
 /** Read `dbUrl` as of one instant until releaseSnapshots(). False, and nothing held, when the server will not. */

@@ -1,0 +1,126 @@
+name: Version matrix
+
+# SupaForge between every pair of Supabase 15 and 17 and PostgreSQL 14 to 18,
+# each way: a first sync, drift with live rows on the target (renames, a
+# retype under a generated column and views, --prove), and a snapshot
+# restored into a fresh database — see packages/cli/scripts/version-matrix.sh.
+# Verdicts are read from the servers' catalogs.
+#
+# A pull request runs pairs that cover each kind of crossing; every pair runs
+# nightly and on demand.
+
+on:
+  pull_request:
+    branches: [main, develop]
+  schedule:
+    - cron: '30 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Supabase's images, fetched once and shared: pulled anonymously by every job
+# at once, the registry refused ("toomanyrequests: Data limit exceeded").
+env:
+  SUPABASE_TAGS: 15.8.1.085 17.6.1.176
+  IMAGES_KEY: supabase-postgres-15.8.1.085-17.6.1.176
+
+jobs:
+  pairs:
+    runs-on: ubuntu-latest
+    outputs:
+      pairs: ${{ steps.pick.outputs.pairs }}
+    steps:
+      - name: Cache Supabase's images
+        id: images
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/images
+          key: ${{ env.IMAGES_KEY }}
+
+      - name: Fetch Supabase's images
+        if: steps.images.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/images"
+          for tag in $SUPABASE_TAGS; do
+            for registry in docker.io/supabase public.ecr.aws/supabase; do
+              if docker pull -q "$registry/postgres:$tag"; then
+                docker tag "$registry/postgres:$tag" "matrix/supabase:$tag"
+                break
+              fi
+            done
+            docker save "matrix/supabase:$tag" | zstd -q -T0 -o "$RUNNER_TEMP/images/$tag.tar.zst"
+          done
+
+      - id: pick
+        run: |
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            pairs='["sb15>sb15","sb17>sb17","sb15>sb17","sb17>sb15","sb17>pg17","pg17>sb17","pg14>pg18","pg18>pg14","pg17>pg15","pg18>pg18"]'
+          else
+            pairs=$(node -e "const n=['sb15','sb17','pg14','pg15','pg16','pg17','pg18']; console.log(JSON.stringify(n.flatMap(s => n.map(t => s + '>' + t))))")
+          fi
+          echo "pairs=$pairs" >> "$GITHUB_OUTPUT"
+
+  pair:
+    needs: pairs
+    name: ${{ matrix.pair }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 12
+      matrix:
+        pair: ${{ fromJSON(needs.pairs.outputs.pairs) }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+          cache-dependency-path: packages/cli/package-lock.json
+
+      # --prove and snapshot need a pg_dump at least as new as the server.
+      - name: Install PostgreSQL client 18
+        run: |
+          set -euo pipefail
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends postgresql-client-18
+
+      - name: Supabase's images
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/images
+          key: ${{ env.IMAGES_KEY }}
+          fail-on-cache-miss: true
+
+      - name: Load them
+        run: for f in "$RUNNER_TEMP"/images/*.tar.zst; do zstd -dc "$f" | docker load -q; done
+
+      - name: Build
+        working-directory: packages/cli
+        run: npm ci && npm run build
+
+      - name: Run the pair
+        working-directory: packages/cli
+        env:
+          PAIR: ${{ matrix.pair }}
+          SB15_IMAGE: matrix/supabase:15.8.1.085
+          SB17_IMAGE: matrix/supabase:17.6.1.176
+          SUPAFORGE_PG_BIN: /usr/lib/postgresql/18/bin
+          OUT: ${{ runner.temp }}/matrix
+        run: scripts/version-matrix.sh "${PAIR%%>*}" "${PAIR##*>}"
+
+      - name: Keep the logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: matrix-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/matrix
+          retention-days: 7

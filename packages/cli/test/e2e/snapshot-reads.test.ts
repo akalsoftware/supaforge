@@ -9,6 +9,7 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest'
 import { PgHarness } from '../harness/PgHarness.js'
 import { describeWithContainers } from '../harness/containers.js'
 import { holdSnapshot, heldSnapshot, inRolledBackTransaction, pgQuery, releaseSnapshots } from '../../src/db.js'
+import { buildDbDiffArgs } from '../../src/dbdiff.js'
 
 const describeE2E = describeWithContainers()
 
@@ -30,6 +31,9 @@ describeE2E('e2e: reads as of one instant', () => {
     const url = h.connectionString('source')
     expect(await holdSnapshot(url)).toBe(true)
     expect(heldSnapshot(url)).toBeTruthy()
+    // @dbdiff/cli reads as of the same instant.
+    expect(buildDbDiffArgs({ sourceUrl: url, targetUrl: 'postgres://elsewhere', type: 'schema', include: 'both' }, '/tmp/o.sql'))
+      .toContain(`--source-snapshot=${heldSnapshot(url)}`)
     await count(url, 'made_meanwhile')
 
     await h.applySql('source', 'CREATE TABLE public.made_meanwhile (id int);')
