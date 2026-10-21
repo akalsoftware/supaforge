@@ -18,7 +18,12 @@
  * pair of schemas the fingerprint distinguishes, so this reports the same
  * differences — it does not find more of them, and it must not find fewer.
  */
+
 import type { SchemaState, StateTable, StateColumn } from '@akal/pg-conformance'
+import { canonicalArrays } from './expression-forms.js'
+
+/** A definition with its constant arrays spelt one way — see expression-forms. */
+const canonical = (d: string | null | undefined) => (typeof d === 'string' ? canonicalArrays(d) : d)
 
 /** How a value reads when absent, so `null` never reaches the output raw. */
 const show = (v: unknown): string => {
@@ -106,26 +111,26 @@ function compareTable(out: string[], subject: string, a: StateTable, b: StateTab
   compareKeyed(out, `constraint on ${prefix}`, a.constraints, b.constraints,
     c => c.type === 'not_null' ? c.definition : c.name,
     (o, s, x, y) => {
-      compareField(o, s, 'definition', x.definition, y.definition)
+      compareField(o, s, 'definition', canonical(x.definition), canonical(y.definition))
       compareField(o, s, 'validated', x.validated, y.validated)
       compareField(o, s, 'deferrable', x.deferrable, y.deferrable)
       compareField(o, s, 'deferred', x.deferred, y.deferred)
     })
   compareKeyed(out, `index on ${prefix}`, a.indexes, b.indexes,
     i => i.name,
-    (o, s, x, y) => compareField(o, s, 'definition', x.definition, y.definition))
+    (o, s, x, y) => compareField(o, s, 'definition', canonical(x.definition), canonical(y.definition)))
   compareKeyed(out, `policy on ${prefix}`, a.policies, b.policies,
     p => p.name,
     (o, s, x, y) => {
       compareField(o, s, 'command', x.command, y.command)
       compareField(o, s, 'permissive', x.permissive, y.permissive)
       compareField(o, s, 'roles', x.roles, y.roles)
-      compareField(o, s, 'using', x.using, y.using)
-      compareField(o, s, 'with check', x.with_check, y.with_check)
+      compareField(o, s, 'using', canonical(x.using), canonical(y.using))
+      compareField(o, s, 'with check', canonical(x.with_check), canonical(y.with_check))
     })
   compareKeyed(out, `trigger on ${prefix}`, a.triggers, b.triggers,
     t => t.name,
-    (o, s, x, y) => compareField(o, s, 'definition', x.definition, y.definition))
+    (o, s, x, y) => compareField(o, s, 'definition', canonical(x.definition), canonical(y.definition)))
 }
 
 /**
@@ -145,7 +150,7 @@ export function diffState(before: SchemaState, after: SchemaState): string[] {
     v => qualify(v.schema, v.name),
     (o, s, a, b) => {
       compareField(o, s, 'materialized', a.materialized, b.materialized)
-      compareField(o, s, 'definition', a.definition, b.definition)
+      compareField(o, s, 'definition', canonical(a.definition), canonical(b.definition))
       compareField(o, s, 'options', a.options, b.options)
     })
 
@@ -163,7 +168,7 @@ export function diffState(before: SchemaState, after: SchemaState): string[] {
     r => `${qualify(r.schema, r.name)}(${r.arguments})`,
     (o, s, a, b) => {
       compareField(o, s, 'kind', a.kind, b.kind)
-      compareField(o, s, 'definition', a.definition, b.definition)
+      compareField(o, s, 'definition', canonical(a.definition), canonical(b.definition))
     })
 
   compareKeyed(out, 'type', before.types, after.types,

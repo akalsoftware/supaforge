@@ -27,6 +27,7 @@ import { promisify } from 'node:util'
 import { fingerprintSql, stateSql, type SchemaState } from '@akal/pg-conformance'
 import { pgQuery, type QueryFn } from './db'
 import { runLikeApply, type PlannedSql } from './promote'
+import { canonicalArrays } from './expression-forms.js'
 import { diffState } from './state-diff'
 import { resolvePgDumpPath, getServerMajorVersion, describeMissingPgDump } from './pg-tools'
 import { rolesNamedBy, sqlSkeleton } from './sql-deps'
@@ -328,7 +329,7 @@ export async function proveConvergence(opts: {
     // The verdict stays with the fingerprint. It is the comparison already
     // trusted, and keeping it means the structured diff below can only change
     // how a difference is *described*, never whether one is detected.
-    if (want === got) return reported({ converged: true, residual: [], cloneName })
+    if (canonicalArrays(want) === canonicalArrays(got)) return reported({ converged: true, residual: [], cloneName })
 
     // The clone's objects have been through a dump and restore, or were
     // recreated from the SQL a rendering produced; the source's have not, and
@@ -344,7 +345,7 @@ export async function proveConvergence(opts: {
       sourceCopyCreated = true
       if (roundTrip.ok) {
         const wantRoundTripped = await fingerprint(roundTripUrl, schemas)
-        if (wantRoundTripped === got) return reported({ converged: true, residual: [], cloneName })
+        if (canonicalArrays(wantRoundTripped) === canonicalArrays(got)) return reported({ converged: true, residual: [], cloneName })
         const residual = await describeDifference(roundTripUrl, cloneUrl, schemas, wantRoundTripped, got)
         return reported(withinScope(residual, before && diffState(await schemaState(roundTripUrl, schemas), before), opts.checks, cloneName))
       }
