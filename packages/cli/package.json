@@ -1,6 +1,6 @@
 {
   "name": "@akal/supaforge",
-  "version": "0.0.35",
+  "version": "0.0.36",
   "mcpName": "io.github.akalsoftware/supaforge",
   "description": "Diff and sync your Supabase environments",
   "author": "Akal Software Ltd",
