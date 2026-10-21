@@ -444,6 +444,17 @@ describe('a new table keeps the source\'s grants, not the target\'s defaults', (
   it('says nothing about a table the target already has', async () => {
     expect((await issues()).some(i => i.id.endsWith('public.shared'))).toBe(false)
   })
+
+  // A migration file is replayed where defaults differ — Supabase no longer
+  // grants the Data API roles on new tables — so it writes every grant.
+  it('writes out what the defaults would grant, when asked to be explicit', async () => {
+    const scan = async (explicit: boolean) => (await new RolesCheck(
+      (async (dbUrl: string, sql: string) => target(sql, dbUrl)) as unknown as QueryFn, { explicit },
+    ).scan(mockContext())).filter(i => i.id.startsWith('roles-grant-missing') && i.id.includes('ro_items'))
+    expect(await scan(false)).toEqual([])
+    const explicit = await scan(true)
+    expect(explicit.map(i => i.sql?.up).join('\n')).toMatch(/GRANT .*SELECT.* ON "public"\."ro_items" TO "anon";/)
+  })
 })
 
 describe('an extra grant to a Data API role is not a footnote', () => {

@@ -368,7 +368,13 @@ function extraGrantSeverity(grantee: string): 'critical' | 'warning' {
 export class RolesCheck extends Check {
   readonly name = 'roles' as const
 
-  constructor(private queryFn: QueryFn = pgQuery) {
+  /**
+   * `explicit`: report a grant the source has even where the target's
+   * default privileges would make it. A migration file is replayed on
+   * databases whose defaults differ — Supabase stopped granting the Data API
+   * roles on new tables in `public` — so it must say every grant itself.
+   */
+  constructor(private queryFn: QueryFn = pgQuery, private options: { explicit?: boolean } = {}) {
     super()
   }
 
@@ -412,7 +418,7 @@ export class RolesCheck extends Check {
     const targetAll = [...(targetGrants ?? []), ...(targetRoutineGrants ?? []), ...(targetSchemaGrants ?? [])]
       .filter(g => !g.object_kind || g.object_kind === 'table' || inSource.has(objectKey(g)))
     const comparable = comparablePrivileges(sourceVersion, targetVersion)
-    const byDefault = grantedByDefault(targetObjects, targetDefaults ?? [])
+    const byDefault = this.options.explicit ? () => false : grantedByDefault(targetObjects, targetDefaults ?? [])
 
     return [
       ...diffRoles(sourceRoles, targetRoles),
