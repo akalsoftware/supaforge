@@ -91,7 +91,7 @@ describeE2E('e2e: the MCP server does not leak across many calls', () => {
     const peakConnections = { source: 0, target: 0 }
 
     for (let i = 1; i <= CALLS; i++) {
-      const res = await client.callTool({ name: 'scan_drift', arguments: {} })
+      const res = await client.callTool({ name: 'diff', arguments: {} })
       expect(res.isError, JSON.stringify(res.content).slice(0, 500)).toBeFalsy()
       if (i % 5 === 0) {
         await client.callTool({ name: 'get_check_result', arguments: { check: 'schema' } })

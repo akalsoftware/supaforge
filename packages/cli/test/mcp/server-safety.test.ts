@@ -5,8 +5,8 @@ import { createServer } from '../../src/mcp/server.js'
  * What an MCP client can tell about these tools, and what it can reach (#96).
  *
  * Three things made it easy for an agent to write when it only meant to look:
- * no tool carried annotations, so a client could not tell `scan_drift` from
- * `apply_fixes` and could not confirm the right one; `apply_fixes` wrote unless
+ * no tool carried annotations, so a client could not tell the read-only scan from
+ * the tool that applies fixes and could not confirm the right one; that tool wrote unless
  * `dryRun: true` was passed, the opposite of everywhere else in supaforge; and
  * every tool accepted an arbitrary `configPath`, so a tool call — or a prompt
  * injected into one — could point the server at any config on disk, including
@@ -22,7 +22,7 @@ import { createServer } from '../../src/mcp/server.js'
  */
 function toolsOf(server: unknown): Record<string, {
   annotations?: Record<string, unknown>
-  inputSchema?: { parse: (value: unknown) => Record<string, unknown> }
+  inputSchema?: { parse: (value: unknown) => Record<string, unknown>; shape?: Record<string, unknown> }
   handler: (args: unknown, extra: unknown) => Promise<{
     isError?: boolean
     content: Array<{ text: string }>
@@ -35,25 +35,25 @@ function toolsOf(server: unknown): Record<string, {
 describe('MCP tool annotations', () => {
   const tools = toolsOf(createServer('/tmp'))
 
-  it('registers the five documented tools', () => {
+  it('registers the documented tools', () => {
     expect(Object.keys(tools).sort()).toEqual([
-      'apply_fixes', 'create_migration', 'get_check_result', 'scan_drift', 'take_snapshot',
+      'create_migration', 'diff', 'get_check_result', 'list_environments', 'sync', 'take_snapshot',
     ])
   })
 
   it('marks the read-only tools read-only', () => {
-    for (const name of ['scan_drift', 'get_check_result']) {
+    for (const name of ['diff', 'get_check_result', 'list_environments']) {
       expect(tools[name].annotations?.readOnlyHint, name).toBe(true)
       expect(tools[name].annotations?.destructiveHint, name).toBe(false)
     }
   })
 
-  it('marks apply_fixes destructive, and nothing else', () => {
+  it('marks sync destructive, and nothing else', () => {
     // This is the one a client should ask about before running.
-    expect(tools.apply_fixes.annotations?.destructiveHint).toBe(true)
-    expect(tools.apply_fixes.annotations?.readOnlyHint).toBe(false)
+    expect(tools.sync.annotations?.destructiveHint).toBe(true)
+    expect(tools.sync.annotations?.readOnlyHint).toBe(false)
 
-    for (const name of ['scan_drift', 'get_check_result', 'take_snapshot', 'create_migration']) {
+    for (const name of ['diff', 'get_check_result', 'list_environments', 'take_snapshot', 'create_migration']) {
       expect(tools[name].annotations?.destructiveHint, name).toBe(false)
     }
   })
@@ -73,29 +73,33 @@ describe('MCP tool annotations', () => {
   })
 })
 
-describe('MCP apply_fixes previews by default', () => {
-  it('defaults dryRun to true', () => {
-    // Writing is opt-in everywhere else in supaforge, where it needs --apply.
-    // Asserted by parsing an argument object with dryRun left out, which is
-    // exactly what the tool receives when a client does not pass it.
-    const tools = toolsOf(createServer('/tmp'))
-    const parsed = tools.apply_fixes.inputSchema?.parse({})
+describe('MCP planning and writing are separate tools', () => {
+  // A single tool with a "really write" argument has to be marked destructive,
+  // so a client asks before every plan too — or it is marked read-only and
+  // can write. Two tools let the annotations tell the truth about each.
+  const tools = toolsOf(createServer('/tmp'))
 
-    expect(parsed?.dryRun).toBe(true)
+  it('diff and sync take the same arguments, so the plan shown is the plan run', () => {
+    const args = (name: string) => Object.keys(tools[name].inputSchema?.shape ?? {}).sort()
+    expect(args('sync').filter(a => a !== 'prove')).toEqual(args('diff'))
   })
 
-  it('still writes when a client asks for it', () => {
-    const tools = toolsOf(createServer('/tmp'))
-    const parsed = tools.apply_fixes.inputSchema?.parse({ dryRun: false })
+  it('holds back drops, and does not prove, unless asked', () => {
+    // Parsed with the arguments left out, which is what the tool receives
+    // when a client does not pass them.
+    expect(tools.sync.inputSchema?.parse({})).toMatchObject({ allowDestructive: false, prove: false })
+    expect(tools.diff.inputSchema?.parse({})).toMatchObject({ allowDestructive: false })
+  })
 
-    expect(parsed?.dryRun).toBe(false)
+  it('has no dry-run switch on sync: previewing is diff\'s job', () => {
+    expect(Object.keys(tools.sync.inputSchema?.shape ?? {})).not.toContain('dryRun')
   })
 })
 
 describe('MCP configPath', () => {
   /** Call a tool the way the transport would, and return its text. */
   async function callScan(server: unknown, args: Record<string, unknown>) {
-    return toolsOf(server).scan_drift.handler(args, {})
+    return toolsOf(server).diff.handler(args, {})
   }
 
   it('is refused by default, and says why', async () => {

@@ -367,13 +367,18 @@ as `io.github.akalsoftware/supaforge`.
 
 The server exposes these tools:
 
-| Tool | Annotation |
-| --- | --- |
-| `scan_drift` | Read-only |
-| `get_check_result` | Read-only |
-| `apply_fixes` | Destructive. Previews unless `dryRun: false` |
-| `take_snapshot` | Writes files |
-| `create_migration` | Writes files |
+| Tool | What it does | Annotation |
+| --- | --- | --- |
+| `list_environments` | The environments in the config, without their credentials | Read-only |
+| `diff` | Every difference, with the plan `sync` would run | Read-only |
+| `get_check_result` | One check's result from the last `diff` or `sync` | Read-only |
+| `sync` | Runs the plan on the target; `prove: true` rehearses it on a copy first | Destructive |
+| `create_migration` | Writes the drift as a migration file, as `migrate create` does | Writes files |
+| `take_snapshot` | Snapshots an environment to local files | Writes files |
+
+`diff` and `sync` take the same arguments, so the plan an agent shows you is
+the plan that runs. Fixes that drop tables or columns are held back unless
+`allowDestructive` is set.
 
 It reads `supaforge.config.json` in the directory given by `--project` (or the
 one it starts in), and refuses a `configPath` from a client unless started

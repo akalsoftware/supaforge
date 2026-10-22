@@ -767,7 +767,7 @@ function unfoldedIssues(
       // The DOWN counterpart is passed so a title can recover a schema the UP
       // statement does not carry — see routineLabel (issue #47).
       title: summariseStatement(lead, check, downSql),
-      description: `${check === 'schema' ? 'Schema' : 'Data'} difference detected by @dbdiff/cli.`,
+      description: describeDifference(type),
       sql: { up: upSql, down: downSql },
     }
   })
@@ -848,7 +848,7 @@ function issuesFromUnits(
       check,
       severity: DROP_TYPES.includes(type) ? 'critical' : 'warning',
       title: summariseStatement(lead, check, downSql),
-      description: `${check === 'schema' ? 'Schema' : 'Data'} difference detected by @dbdiff/cli.`,
+      description: describeDifference(type),
       sql: { up: upSql, down: downSql },
       ...manual,
     }
@@ -1408,6 +1408,23 @@ function splitStatements(sql: string): string[] {
  */
 function withoutLeadingComments(chunk: string): string {
   return chunk.trim().replace(/^(?:--[^\n]*(?:\n|$)\s*)+/, '').trim()
+}
+
+/**
+ * What a finding means and what its fix does, from the kind of statement that
+ * leads it. Said in words because an agent relays the description to a person,
+ * who should not need to read the SQL to know whether it adds or removes.
+ */
+export function describeDifference(type: string): string {
+  if (type === 'insert') return 'Rows in the source are missing from the target. The fix inserts them.'
+  if (type === 'update') return 'Rows differ between source and target. The fix updates the target\'s rows to match.'
+  if (type === 'delete') return 'The target has rows the source does not. The fix deletes them from the target.'
+  if (type === 'drop' || type.startsWith('drop-')) {
+    return 'The target has this and the source does not. The fix drops it from the target, '
+      + 'and with it any data it holds.'
+  }
+  if (type.startsWith('create')) return 'The source has this and the target does not. The fix creates it on the target.'
+  return 'This exists on both sides but differs. The fix changes the target to match the source.'
 }
 
 export function classifyStatement(sql: string): string {
