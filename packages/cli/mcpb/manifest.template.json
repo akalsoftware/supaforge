@@ -28,8 +28,9 @@
     }
   },
   "tools": [
-    { "name": "scan_drift", "description": "Compare two environments and report drift, with the SQL to fix it" },
-    { "name": "apply_fixes", "description": "Apply fixes from a scan to the target environment" },
+    { "name": "list_environments", "description": "List the environments in the config, without their credentials" },
+    { "name": "diff", "description": "Compare two environments and report every difference, with the plan sync would run" },
+    { "name": "sync", "description": "Make the target match the source by running that plan, optionally proved on a copy first" },
     { "name": "take_snapshot", "description": "Snapshot an environment to local files" },
     { "name": "create_migration", "description": "Write a migration file for the drift found" },
     { "name": "get_check_result", "description": "Read one check's result from the last scan" }

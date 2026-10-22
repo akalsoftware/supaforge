@@ -120,10 +120,10 @@ describe('MCP tools', () => {
     await rm(tmpDir, { recursive: true, force: true })
   })
 
-  describe('scan_drift', () => {
+  describe('diff', () => {
     it('errors when config file is missing', async () => {
       ;({ client, cleanup } = await makeClient(tmpDir))
-      const result = await client.callTool({ name: 'scan_drift', arguments: {} })
+      const result = await client.callTool({ name: 'diff', arguments: {} })
       expect(result.isError).toBe(true)
       const text = (result.content as Array<{ text: string }>)[0].text
       expect(text).toContain('Error')
@@ -132,7 +132,7 @@ describe('MCP tools', () => {
     it('errors when config has no environments', async () => {
       await writeFile(join(tmpDir, 'supaforge.config.json'), JSON.stringify({ environments: {}, source: 'x', target: 'y' }))
       ;({ client, cleanup } = await makeClient(tmpDir))
-      const result = await client.callTool({ name: 'scan_drift', arguments: {} })
+      const result = await client.callTool({ name: 'diff', arguments: {} })
       expect(result.isError).toBe(true)
     })
   })
@@ -143,7 +143,7 @@ describe('MCP tools', () => {
       const result = await client.callTool({ name: 'get_check_result', arguments: { check: 'rls-coverage' } })
       expect(result.isError).toBe(true)
       const text = (result.content as Array<{ text: string }>)[0].text
-      expect(text).toContain('scan_drift first')
+      expect(text).toContain('Run diff first')
     })
 
     it('returns the check result when a scan exists', async () => {
@@ -167,10 +167,10 @@ describe('MCP tools', () => {
     })
   })
 
-  describe('apply_fixes (dry-run path)', () => {
+  describe('sync', () => {
     it('errors when config is missing', async () => {
       ;({ client, cleanup } = await makeClient(tmpDir))
-      const result = await client.callTool({ name: 'apply_fixes', arguments: { dryRun: true } })
+      const result = await client.callTool({ name: 'sync', arguments: {} })
       expect(result.isError).toBe(true)
     })
   })
@@ -252,7 +252,7 @@ describe('MCP resources', () => {
     const result = await client.readResource({ uri: 'supaforge://last-scan' })
     const text = result.contents[0].text as string
     const parsed = JSON.parse(text)
-    expect(parsed.message).toContain('scan_drift first')
+    expect(parsed.message).toContain('Run diff first')
   })
 
   it('last-scan resource returns scan result after setLastScanResult', async () => {
@@ -313,11 +313,11 @@ describe('MCP prompts', () => {
     expect(names).toContain('fix_critical_issues')
   })
 
-  it('review_drift_before_deploy prompt mentions scan_drift', async () => {
+  it('review_drift_before_deploy prompt mentions diff and sync', async () => {
     const result = await client.getPrompt({ name: 'review_drift_before_deploy', arguments: {} })
     const text = result.messages[0].content.type === 'text' ? result.messages[0].content.text : ''
-    expect(text).toContain('scan_drift')
-    expect(text).toContain('apply_fixes')
+    expect(text).toContain('Call diff')
+    expect(text).toContain('run sync')
   })
 
   it('review_drift_before_deploy prompt includes environment name when provided', async () => {
@@ -374,8 +374,9 @@ describe('MCP tool registration', () => {
   it('lists all expected tools', async () => {
     const { tools } = await client.listTools()
     const names = tools.map(t => t.name)
-    expect(names).toContain('scan_drift')
-    expect(names).toContain('apply_fixes')
+    expect(names).toContain('diff')
+    expect(names).toContain('sync')
+    expect(names).toContain('list_environments')
     expect(names).toContain('take_snapshot')
     expect(names).toContain('create_migration')
     expect(names).toContain('get_check_result')
