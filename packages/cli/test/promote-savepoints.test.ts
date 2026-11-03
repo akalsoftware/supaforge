@@ -104,6 +104,27 @@ describe('promote: one fix the target cannot take', () => {
   // Ordering is meant to make this impossible, but a missing dependency no
   // longer stops the apply, so an ordering miss must not quietly leave a fix
   // out that would have applied a moment later.
+  // Roles are server-wide: one the source lacks can own objects in another
+  // database on the target's server, and DROP ROLE refuses. That used to roll
+  // back every schema fix in the apply with it.
+  it('leaves out a role drop the server refuses and commits the rest', async () => {
+    const result = scan([['a', 'provides:a'], ['b', 'needs:a provides:b']])
+    result.checks.push({
+      check: 'roles', status: 'drifted', durationMs: 1,
+      issues: [{
+        id: 'roles-extra-reporting', check: 'roles', severity: 'warning', title: 'Extra role: reporting',
+        description: 'test', sql: { up: 'DROP ROLE IF EXISTS "reporting"; -- code:2BP01', down: '' },
+      }],
+    })
+    const applied = await promote({ dbUrl: 'postgres://t', scanResult: result, allowDestructive: true })
+
+    expect(applied.rolledBack).toBeUndefined()
+    expect(applied.applied.map(f => f.issueId)).toEqual(['a', 'b'])
+    expect(applied.errors.map(e => e.issueId)).toEqual(['roles-extra-reporting'])
+    expect(applied.errors[0].error).toContain('still owns or is granted')
+    expect(committed).toEqual(new Set(['a', 'b']))
+  })
+
   it('retries a fix whose dependency comes later in the batch', async () => {
     const result = await promote({
       dbUrl: 'postgres://t',
@@ -158,6 +179,11 @@ describe('unmetDependency', () => {
       expect(unmetDependency('CREATE TABLE t (c text UNIQUE NULLS NOT DISTINCT)', err(code), true), code).toContain('older')
       expect(unmetDependency('CREATE TABLE t (c text UNIQUE NULLS NOT DISTINCT)', err(code), false), code).toBeUndefined()
     }
+  })
+
+  it('accepts a role the server still needs, only for DROP ROLE', () => {
+    expect(unmetDependency('DROP ROLE IF EXISTS "reporting";', err('2BP01'))).toContain('still owns or is granted')
+    expect(unmetDependency('DROP TABLE t;', err('2BP01'))).toBeUndefined()
   })
 
   it('rejects every other failure', () => {

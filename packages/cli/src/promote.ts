@@ -2,7 +2,7 @@ import pg from 'pg'
 import { newPgClient } from './db.js'
 import type { ScanResult, SyncAction } from './types/drift'
 import { errMsg } from './utils/error'
-import { ABSENT_ON_TARGET, EXTENSION_UNAVAILABLE, OLDER_SERVER, UNDEFINED_COLUMN, sqlState } from './pg-errors.js'
+import { ABSENT_ON_TARGET, DEPENDENT_OBJECTS_STILL_EXIST, EXTENSION_UNAVAILABLE, OLDER_SERVER, UNDEFINED_COLUMN, sqlState } from './pg-errors.js'
 import { destructiveReason } from './dbdiff'
 import { parseStatements } from './sql-ast'
 import { estimateLocks, lockBudgetWarning, readLockBudget } from './lock-budget.js'
@@ -599,7 +599,10 @@ async function runInTransaction(
  * is something else.
  *
  * Only "does not exist" failures qualify, and for `CREATE EXTENSION`, an
- * extension the server does not ship.
+ * extension the server does not ship — and a `DROP ROLE` for a role that still
+ * owns or is granted something. Roles are server-wide, so a role this database
+ * does not use can still own objects in another one on the same server; that
+ * one refusal used to roll back every other fix in the apply.
  */
 export function unmetDependency(sql: string, err: unknown, olderTarget = false): string | undefined {
   const code = sqlState(err)
@@ -613,6 +616,9 @@ export function unmetDependency(sql: string, err: unknown, olderTarget = false):
   }
   if (ABSENT_ON_TARGET.has(code) || code === UNDEFINED_COLUMN) {
     return 'it needs something the target does not have'
+  }
+  if (code === DEPENDENT_OBJECTS_STILL_EXIST && /^\s*DROP\s+ROLE\b/i.test(sqlSkeleton(sql))) {
+    return 'the role still owns or is granted objects on this server, in this or another database; reassign or drop those (REASSIGN OWNED / DROP OWNED in each database) before dropping it'
   }
   return undefined
 }

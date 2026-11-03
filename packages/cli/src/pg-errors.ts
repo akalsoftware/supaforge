@@ -4,6 +4,12 @@
  */
 export const ABSENT_ON_TARGET: ReadonlySet<string> = new Set(['42P01', '42883', '3F000', '42704'])
 
+/**
+ * An object others still depend on: for DROP ROLE, a role that owns objects or
+ * holds privileges somewhere on the server, in any of its databases.
+ */
+export const DEPENDENT_OBJECTS_STILL_EXIST = '2BP01'
+
 /** A column the statement names is missing. */
 export const UNDEFINED_COLUMN = '42703'
 
