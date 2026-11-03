@@ -44,13 +44,18 @@ image(){ case $1 in
   sb15) echo "$SB15_IMAGE";; pv18) echo docker.io/pgvector/pgvector:pg18;;
   pg1[5-8]) echo "docker.io/library/postgres:${1#pg}";; *) echo "unknown server $1" >&2; exit 2;; esac; }
 major(){ case $1 in sb15) echo 15;; *) echo "${1:2}";; esac; }
+# GitLab's schema is ~1,475 tables and ~5,000 indexes in one transaction,
+# about 10,500 locks; the default lock table (64 per connection slot) holds
+# about 7,000, so it is raised as anyone running a schema that size would.
+# SupaForge warns before such an apply and says how to fix it.
+SERVER_ARGS=(); [ "$DATASET" = gitlab ] && SERVER_ARGS=(-c max_locks_per_transaction=256)
 start(){ local node=$1 c=$2 port=$3
   docker rm -f "$c" >/dev/null 2>&1
   if [ "$node" = sb15 ]; then
     docker run -d --name "$c" -p 127.0.0.1:$port:5432 -e POSTGRES_PASSWORD=rwpass \
-      -e JWT_SECRET=ci-only-jwt-secret-at-least-32-characters-long "$(image $node)" postgres -D /etc/postgresql >/dev/null
+      -e JWT_SECRET=ci-only-jwt-secret-at-least-32-characters-long "$(image $node)" postgres -D /etc/postgresql "${SERVER_ARGS[@]}" >/dev/null
   else
-    docker run -d --name "$c" -p 127.0.0.1:$port:5432 -e POSTGRES_PASSWORD=rwpass "$(image $node)" >/dev/null
+    docker run -d --name "$c" -p 127.0.0.1:$port:5432 -e POSTGRES_PASSWORD=rwpass "$(image $node)" postgres "${SERVER_ARGS[@]}" >/dev/null
   fi
   local ok=0
   for _ in $(seq 240); do

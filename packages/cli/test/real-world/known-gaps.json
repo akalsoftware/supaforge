@@ -15,5 +15,6 @@
   "adventureworks pg17>sb15 sync": "DBDiff#285: as pg17>pg17",
   "adventureworks pg17>sb15 drift": "DBDiff#285: as pg17>pg17",
   "adventureworks pg17>sb15 drift-prove": "DBDiff#285: as pg17>pg17",
-  "gitlab pg17>pg17 sync": "DBDiff#285: partitions in another schema than their parent, and a partitioned table's own sequence"
+  "gitlab pg17>pg17 sync": "DBDiff#285: partitions in another schema than their parent, and a partitioned table's own sequence",
+  "chinook pg17>sb15 sync": "Supabase's own extensions (pg_graphql, supabase_vault, …) and its supabase_realtime publication read as extra on a Supabase target synced from plain PostgreSQL, with no fix — a re-scan can never be clean"
 }
