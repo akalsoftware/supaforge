@@ -7,6 +7,8 @@ import { captureSnapshot, formatSnapshotLayers } from '../snapshot.js'
 import {
   cloneRemoteToLocal,
   replaceDbName,
+  cloneTargetName,
+  maintenanceUrl,
   listBranches,
   reconcileClones,
   deleteBranch,
@@ -59,8 +61,7 @@ export default class Clone extends BaseCommand {
       description: 'Source environment to clone from (defaults to config source)',
     }),
     'local-db': Flags.string({
-      description: 'Name for the local database (default: supaforge_local)',
-      default: 'supaforge_local',
+      description: 'Name for the local database (default: the one --local-url names, else supaforge_local)',
     }),
     'local-url': Flags.string({
       description: 'Local PostgreSQL URL (default: postgres://postgres:postgres@localhost:5432/postgres)',
@@ -178,7 +179,6 @@ export default class Clone extends BaseCommand {
 
     // ── Clone: preflight + execute ───────────────────────────────────────────
     const { envName, env } = this.resolveEnv(config, flags.env)
-    const localDbName = flags['local-db']
     let localBaseUrl = flags['local-url']
 
     // Auto-start a local PostgreSQL container if requested
@@ -189,6 +189,7 @@ export default class Clone extends BaseCommand {
       this.log(`    ${ok('✓')} PostgreSQL running via ${bold(info.runtime)} on port ${info.port}\n`)
     }
 
+    const localDbName = cloneTargetName(localBaseUrl, flags['local-db'])
     const localDbUrl = replaceDbName(localBaseUrl, localDbName)
 
     // Always run preflight checks — even with --apply
@@ -221,7 +222,7 @@ export default class Clone extends BaseCommand {
 
     pre.addCheck('Target database', async () => {
       try {
-        const client = newPgClient(localBaseUrl)
+        const client = newPgClient(maintenanceUrl(localBaseUrl, localDbName))
         await client.connect()
         const { rows } = await client.query(
           'SELECT 1 FROM pg_database WHERE datname = $1',

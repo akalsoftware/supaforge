@@ -203,3 +203,19 @@ describe('isCloneDatabase', () => {
     expect(await isCloneDatabase('postgresql://postgres@localhost:5432/', tempDir)).toBe(false)
   })
 })
+
+describe('clone target from --local-url', () => {
+  it('clones into the database the URL names when --local-db is not given', async () => {
+    const { cloneTargetName } = await import('../src/branch.js')
+    expect(cloneTargetName('postgres://u:p@h:5432/mydb')).toBe('mydb')
+    expect(cloneTargetName('postgres://u:p@h:5432/postgres')).toBe('supaforge_local')
+    expect(cloneTargetName('postgres://u:p@h:5432')).toBe('supaforge_local')
+    expect(cloneTargetName('postgres://u:p@h:5432/mydb', 'other')).toBe('other')
+  })
+
+  it('creates and drops a database from postgres, never from inside it', async () => {
+    const { maintenanceUrl } = await import('../src/branch.js')
+    expect(maintenanceUrl('postgres://u:p@h:5432/mydb', 'mydb')).toBe('postgres://u:p@h:5432/postgres')
+    expect(maintenanceUrl('postgres://u:p@h:5432/admin', 'mydb')).toBe('postgres://u:p@h:5432/admin')
+  })
+})

@@ -76,6 +76,32 @@ export function replaceDbName(sourceUrl: string, dbName: string): string {
   return u.toString()
 }
 
+/** The database a connection URL names, or '' when it names none. */
+export function dbNameOf(url: string): string {
+  return decodeURIComponent(new URL(url).pathname.replace(/^\//, ''))
+}
+
+/**
+ * Where to create or drop `dbName` from. A URL naming that very database
+ * cannot drop it — PostgreSQL refuses to drop the database a session is
+ * connected to — so the server's `postgres` database is used instead.
+ */
+export function maintenanceUrl(baseUrl: string, dbName: string): string {
+  return dbNameOf(baseUrl) === dbName ? replaceDbName(baseUrl, 'postgres') : baseUrl
+}
+
+/**
+ * The database `clone` writes to when --local-db is not given: the one the
+ * local URL names, or `supaforge_local` when it names none or only the
+ * `postgres` maintenance database. A URL naming a database used to be read
+ * only for its server, and the clone went to `supaforge_local` regardless.
+ */
+export function cloneTargetName(localUrl: string, explicit?: string): string {
+  if (explicit) return explicit
+  const named = dbNameOf(localUrl)
+  return named && named !== 'postgres' ? named : 'supaforge_local'
+}
+
 /** Parse connection URL to extract components. */
 function parseUrl(url: string) {
   const u = new URL(url)
@@ -459,7 +485,7 @@ export async function cloneRemoteToLocal(opts: CloneRemoteOptions): Promise<Clon
     throw new Error(compat.message)
   }
 
-  const localMaintenanceUrl = opts.localBaseUrl
+  const localMaintenanceUrl = maintenanceUrl(opts.localBaseUrl, opts.localDbName)
   const localDbUrl = replaceDbName(opts.localBaseUrl, opts.localDbName)
 
   // Create the empty target database on the local server
