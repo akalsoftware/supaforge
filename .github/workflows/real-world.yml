@@ -1,0 +1,97 @@
+name: Real-world databases
+
+# SupaForge on public sample databases nobody here wrote — Chinook,
+# AdventureWorks, Pagila (PostgreSQL 18, pgvector) and GitLab's schema
+# (1,475 tables) — across versions and onto Supabase's image: clone, sync into
+# an empty database, a migration's worth of drift with --prove, and snapshot
+# then restore. See packages/cli/scripts/real-world.sh.
+#
+# Failures already understood are listed in
+# packages/cli/test/real-world/known-gaps.json; the job fails on any other,
+# and on a listed one that starts passing — so a DBDiff bump that fixes one
+# has to say so. Runs nightly, on demand, and on pull requests that change
+# the script, its gaps, or the lockfile.
+
+on:
+  schedule:
+    - cron: '45 3 * * *'
+  workflow_dispatch:
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - .github/workflows/real-world.yml
+      - packages/cli/scripts/real-world.sh
+      - packages/cli/test/real-world/**
+      - packages/cli/package-lock.json
+
+permissions:
+  contents: read
+
+jobs:
+  dataset:
+    name: ${{ matrix.dataset }} ${{ matrix.source }}>${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { dataset: chinook, source: pg17, target: pg17 }
+          - { dataset: chinook, source: pg17, target: pg15 }
+          - { dataset: chinook, source: pg17, target: sb15 }
+          - { dataset: adventureworks, source: pg17, target: pg17 }
+          - { dataset: adventureworks, source: pg17, target: pg18 }
+          - { dataset: adventureworks, source: pg17, target: pg15 }
+          - { dataset: adventureworks, source: pg17, target: sb15 }
+          - { dataset: pagila, source: pv18, target: pv18 }
+          - { dataset: gitlab, source: pg17, target: pg17 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+          cache-dependency-path: packages/cli/package-lock.json
+      # --prove, clone and snapshot need a pg_dump at least as new as the server.
+      - name: Install PostgreSQL client 18
+        run: |
+          set -euo pipefail
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL --retry 5 --retry-all-errors -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends postgresql-client-18
+      - name: Fetch Supabase's image
+        if: matrix.target == 'sb15'
+        run: |
+          set -euo pipefail
+          for registry in public.ecr.aws/supabase docker.io/supabase; do
+            for _ in 1 2 3; do
+              if docker pull -q "$registry/postgres:15.8.1.085"; then
+                docker tag "$registry/postgres:15.8.1.085" rw/supabase:15; exit 0
+              fi
+              sleep 10
+            done
+          done
+          exit 1
+      - name: Build
+        working-directory: packages/cli
+        run: npm ci && npm run build
+      - name: Run
+        working-directory: packages/cli
+        env:
+          SB15_IMAGE: rw/supabase:15
+          SUPAFORGE_PG_BIN: /usr/lib/postgresql/18/bin
+          OUT: ${{ runner.temp }}/real-world
+        run: scripts/real-world.sh "${{ matrix.dataset }}" "${{ matrix.source }}" "${{ matrix.target }}"
+      - name: Keep the logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-world-${{ matrix.dataset }}-${{ matrix.source }}-${{ matrix.target }}
+          path: |
+            ${{ runner.temp }}/real-world
+            !${{ runner.temp }}/real-world/data
+          retention-days: 7
