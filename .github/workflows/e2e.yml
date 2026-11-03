@@ -41,7 +41,11 @@ jobs:
       - name: Install Supabase CLI
         uses: supabase/setup-cli@v3
         with:
-          version: latest
+          # Pinned: `latest` became CLI 3.0.0 on 2026-11-02, which refuses the
+          # [inbucket] section these stacks' config.toml still uses, and every
+          # pull request's e2e job failed before running a test. Move to 3.x
+          # deliberately, with the config migrated, rather than by surprise.
+          version: 2.122.1
 
       # Raises the ghcr.io pull ceiling. Never fails the job: an anonymous pull
       # still works, it is only more likely to be throttled.
