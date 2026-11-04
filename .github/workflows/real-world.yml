@@ -86,8 +86,10 @@ jobs:
           SUPAFORGE_PG_BIN: /usr/lib/postgresql/18/bin
           OUT: ${{ runner.temp }}/real-world
         run: scripts/real-world.sh "${{ matrix.dataset }}" "${{ matrix.source }}" "${{ matrix.target }}"
+      # Kept on success too, so a later failure can be compared with the
+      # last passing run's states.
       - name: Keep the logs
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: real-world-${{ matrix.dataset }}-${{ matrix.source }}-${{ matrix.target }}
