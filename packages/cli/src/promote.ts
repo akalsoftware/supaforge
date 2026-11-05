@@ -357,7 +357,7 @@ function holdBackDropsStillInUse(
   skipped: PlannedWork['skipped'],
   downs: ReadonlyMap<string, string> = new Map(),
 ): PlannedSql[] {
-  const kept = keptBack.map(k => ({ issueId: k.issueId, skeleton: sqlSkeleton(k.definition) }))
+  const kept = keptBack.map(k => ({ issueId: k.issueId, skeleton: usesOf(k.definition) }))
   let remaining = statements
 
   // Until nothing more is held back: what one held-back drop keeps can keep
@@ -378,13 +378,27 @@ function holdBackDropsStillInUse(
           + 're-run with --allow-destructive to apply both',
       })
       const definition = downs.get(statement.issueId)
-      if (definition) kept.push({ issueId: user.issueId, skeleton: sqlSkeleton(definition) })
+      if (definition) kept.push({ issueId: user.issueId, skeleton: usesOf(definition) })
       changed = true
       return false
     })
   }
   return remaining
 }
+
+/**
+ * What a definition can be searched for to see which objects it uses: its
+ * skeleton, plus the sequences it names in string literals. A column default
+ * names its sequence only inside one — `nextval('public.shared_seq'::regclass)`
+ * — which the skeleton blanks, so a sequence a held-back table still drew on
+ * was dropped anyway, and failed with `cannot drop sequence ... because other
+ * objects depend on it`.
+ */
+function usesOf(definition: string): string {
+  const sequences = [...definition.matchAll(SEQUENCE_LITERAL)].map(m => m[1] ?? m[2])
+  return [sqlSkeleton(definition), ...sequences].join(' ')
+}
+const SEQUENCE_LITERAL = /nextval\(\s*'((?:[^']|'')*)'|'((?:[^']|'')*)'\s*::\s*regclass/gi
 
 /** The names a fix drops, when all it does is drop types, domains, routines or sequences. */
 function droppedSupportingObjects(sql: string): string[] {
