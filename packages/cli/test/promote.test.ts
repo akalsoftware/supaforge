@@ -759,6 +759,24 @@ describe('planWork and drops something held back still uses', () => {
     expect(plan.skipped.map(s => s.issueId).sort()).toEqual(['schema-alter-1', 'schema-drop-type-2', 'schema-drop-type-3'])
   })
 
+  it('holds back a sequence a held-back table\'s default still draws on', () => {
+    // A default names its sequence only in a string literal, as pg_dump writes it.
+    const plan = planWork(makeScanResult({
+      checks: [{
+        check: 'schema', status: 'drifted', durationMs: 0, issues: [
+          { id: 'schema-drop-1', check: 'schema', severity: 'critical', description: 'd', title: 'Extra table: public.b',
+            sql: { up: 'DROP TABLE "b";', down: "CREATE TABLE public.b (\n    id integer DEFAULT nextval('public.shared_seq'::regclass) NOT NULL\n);" } },
+          { id: 'schema-alter-2', check: 'schema', severity: 'warning', description: 'd', title: 'Table altered: public.a',
+            sql: { up: 'ALTER TABLE "a" ALTER COLUMN "id" DROP DEFAULT;\nALTER SEQUENCE "shared_seq" OWNED BY NONE;', down: `ALTER TABLE "a" ALTER COLUMN "id" SET DEFAULT nextval('shared_seq'::regclass);` } },
+          { id: 'schema-drop-sequence-3', check: 'schema', severity: 'critical', description: 'd', title: 'Extra sequence: public.shared_seq',
+            sql: { up: 'DROP SEQUENCE IF EXISTS "shared_seq";', down: 'CREATE SEQUENCE "shared_seq" START WITH 1000;' } },
+        ],
+      }],
+    }))
+    expect(plan.sqlStatements.map(s => s.issueId)).toEqual(['schema-alter-2'])
+    expect(plan.skipped.find(s => s.issueId === 'schema-drop-sequence-3')?.reason).toMatch(/Still used by what schema-drop-1 keeps/)
+  })
+
   it('drops both once destructive fixes are allowed', () => {
     const plan = planWork(withLegacyTable(), { allowDestructive: true })
     expect(plan.sqlStatements.map(s => s.issueId).sort()).toEqual(['schema-drop-1', 'schema-drop-type-2', 'schema-drop-type-3'])
