@@ -1,0 +1,3 @@
+{
+  "GHSA-g3hv-75wg-m249": "minimatch < 11.0.1, required as ^10.2.5 by @oclif/core (latest 5.1.11 included). Only oclif matches its own plugin names with it, never user input. Remove once @oclif/core accepts minimatch 11 (oclif/core#1664)."
+}

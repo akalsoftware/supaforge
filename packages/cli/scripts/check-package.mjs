@@ -5,6 +5,10 @@
 // sources, tests, configs, anything secret-shaped) or grows past its size
 // budget, then installs the packed tarball into an empty directory and runs
 // it, which catches a file the CLI needs at runtime but `files` leaves out.
+// Then audits that install: every advisory there is one a user installing the
+// package gets, and directories that list MCP servers scan for exactly that.
+// The repo's own lockfile can't stand in for it — `overrides` there never
+// reach a user, whose npm resolves the published ranges afresh.
 //
 //   node scripts/check-package.mjs            # after `npm run build`
 //   node scripts/check-package.mjs --no-install
@@ -79,11 +83,41 @@ if (!process.argv.includes('--no-install') && problems.length === 0) {
       if (!out.trim()) problems.push(`installed package printed nothing for: supaforge ${args.join(' ')}`)
     }
     console.log('  installed from the tarball and ran --version, --help, diff --help')
+    auditInstall(dir)
   } catch (err) {
     problems.push(`installing or running the packed tarball failed: ${err.message}`)
   } finally {
     rmSync(dir, {recursive: true, force: true})
   }
+}
+
+// Advisories in what a user installs, against scripts/audit-exceptions.json:
+// one listed there is fixable only upstream and says why. Anything else fails,
+// and so does an exception whose advisory has gone, so the list only shrinks.
+function auditInstall(dir) {
+  const exceptions = JSON.parse(readFileSync(new URL('audit-exceptions.json', import.meta.url), 'utf8'))
+  let report
+  try {
+    report = execFileSync(npm, ['audit', '--omit=dev', '--json'], {cwd: dir, encoding: 'utf8'})
+  } catch (err) {
+    report = err.stdout // npm audit exits non-zero when it finds anything
+  }
+  const found = new Map()
+  for (const [name, vuln] of Object.entries(JSON.parse(report).vulnerabilities ?? {})) {
+    for (const via of vuln.via) {
+      if (typeof via === 'string') continue
+      const id = via.url.split('/').pop()
+      found.set(id, `${id} (${via.severity}) in ${name}: ${via.title}`)
+    }
+  }
+  for (const [id, line] of found) {
+    if (!(id in exceptions)) problems.push(`advisory in the installed package: ${line}`)
+  }
+  for (const id of Object.keys(exceptions)) {
+    if (!found.has(id)) problems.push(`${id} no longer affects the installed package: remove it from scripts/audit-exceptions.json`)
+  }
+  const excused = [...found.keys()].filter((id) => id in exceptions)
+  console.log(`  npm audit of the install: ${found.size} advisories, ${excused.length} excepted${excused.length ? ` (${excused.join(', ')})` : ''}`)
 }
 
 if (problems.length > 0) {

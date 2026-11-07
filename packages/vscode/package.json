@@ -56,5 +56,11 @@
     "@vscode/test-electron": "^2.5.2",
     "@vscode/vsce": "^3.6.0",
     "ovsx": "^0.10.5"
+  },
+  "overrides": {
+    "minimatch": "^11.0.5",
+    "glob": "^14.0.4",
+    "diff": "^8.0.3",
+    "serialize-javascript": "^7.1.4"
   }
 }

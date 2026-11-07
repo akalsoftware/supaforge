@@ -23,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [cli, mcp]
+        package: [cli, mcp, vscode]
     defaults:
       run:
         working-directory: packages/${{ matrix.package }}
@@ -34,18 +34,14 @@ jobs:
         with:
           node-version: 22.x
 
-      # The full report, dev tooling included, for the log. Never fails.
-      - name: Report all advisories
-        run: npm audit || true
-
-      # What users install: fail on any high or critical advisory.
-      - name: Runtime dependencies (high and above)
-        run: npm audit --omit=dev --audit-level=high
-
-      # Dev tooling runs in CI with repository access, so a critical there
-      # matters too.
-      - name: All dependencies (critical)
-        run: npm audit --audit-level=critical
+      # Any advisory, at any severity, dev tooling included: directories that
+      # list MCP servers want a clean scan, and an advisory left at "moderate"
+      # is one nobody gets round to. Fix it with a dependency update or, when
+      # the parent pins an old range, an `overrides` entry in package.json.
+      # What a user installs is checked separately, from the packed tarball, by
+      # the package job: overrides here never reach them.
+      - name: All dependencies, any severity
+        run: npm audit
 
   # Flags a PR that adds or upgrades a dependency into a known advisory, before
   # it merges — npm audit only sees the lockfile once it already has.
@@ -82,6 +78,7 @@ jobs:
       - run: npm run build
 
       # Allow-list of shipped files, size budgets, then install the tarball
-      # into an empty directory and run it.
+      # into an empty directory, run it, and audit that install against
+      # scripts/audit-exceptions.json.
       - name: Check the package
         run: node scripts/check-package.mjs
