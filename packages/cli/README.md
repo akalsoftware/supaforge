@@ -48,7 +48,7 @@ Everything that writes previews first. Add `--apply` to make it happen.
 | VS Code and its forks | The SupaForge extension: commands, and the MCP server for the editor's agent. Each [release](https://github.com/akalsoftware/supaforge/releases/latest) carries it as a `.vsix` |
 | Cursor, VS Code, Claude | One-click installs of the MCP server — see [MCP](#mcp-ai-agents) |
 
-It needs Node.js 20 or newer. DBDiff, its diff engine, comes with it as a
+It needs Node.js 22 or newer. DBDiff, its diff engine, comes with it as a
 native binary for your platform, so there is nothing else to install. The
 Docker image needs nothing at all, and carries the PostgreSQL client tools
 `--prove` uses; pass connection strings with `-e`, and mount the project at

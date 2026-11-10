@@ -4,7 +4,7 @@
 // each workspace folder that has a supaforge.config.json, and commands that
 // run the CLI in a terminal. Both run `npx @akal/supaforge@<version>`, the
 // version this extension was released with unless supaforge.cliVersion says
-// otherwise, so there is nothing else to install beyond Node.js 20+.
+// otherwise, so there is nothing else to install beyond Node.js 22+.
 'use strict'
 
 const vscode = require('vscode')
