@@ -37,6 +37,6 @@
   ],
   "compatibility": {
     "platforms": ["__OS__"],
-    "runtimes": { "node": ">=20.0.0" }
+    "runtimes": { "node": ">=22.0.0" }
   }
 }

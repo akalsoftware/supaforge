@@ -35,7 +35,7 @@ Each runs in a terminal, so you see exactly what it does.
 
 ## Requirements
 
-Node.js 20 or newer. The extension runs SupaForge with `npx`, at the version
+Node.js 22 or newer. The extension runs SupaForge with `npx`, at the version
 it was released with; set `supaforge.cliVersion` to choose another (e.g.
 `latest`).
 
