@@ -136,6 +136,27 @@ export function diffPublications(source: RealtimePublication[], target: Realtime
 
   for (const pubname of targetPubs) {
     if (!sourcePubs.has(pubname)) {
+      // Every Supabase project has supabase_realtime, empty until a table is
+      // enabled for Realtime, so a source without it (plain PostgreSQL) is not
+      // drift. What it streams is: those tables' changes reach clients, so
+      // each is reported, though the source publishes none of them.
+      if (pubname === 'supabase_realtime') {
+        for (const t of target.filter(p => p.pubname === pubname && p.tablename)) {
+          const fqn = `${t.schemaname}.${t.tablename}`
+          issues.push({
+            id: `realtime-extra-table-${pubname}-${fqn}`,
+            check: 'realtime',
+            severity: 'warning',
+            title: `Extra published table: ${fqn} in ${pubname}`,
+            description: `Table "${fqn}" streams its changes to Realtime clients in target, but source publishes nothing for Realtime.`,
+            sql: {
+              up: `ALTER PUBLICATION ${quoteName(pubname)} DROP TABLE ${quoteName(t.schemaname)}.${quoteName(t.tablename)};`,
+              down: `ALTER PUBLICATION ${quoteName(pubname)} ADD TABLE ${quoteName(t.schemaname)}.${quoteName(t.tablename)};`,
+            },
+          })
+        }
+        continue
+      }
       issues.push({
         id: `realtime-extra-pub-${pubname}`,
         check: 'realtime',
