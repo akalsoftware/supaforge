@@ -61,6 +61,27 @@ const UPDATES_SQL = `
 `
 
 /**
+ * Extensions Supabase installs in every project, in schemas of its own. On a
+ * Supabase target synced from plain PostgreSQL they are not drift: the user
+ * did not add them, cannot usefully remove them (Auth and Vault rely on
+ * them), and a re-scan could never come back clean. Only in those schemas —
+ * the same extension a user installed in `public` is theirs, and reported.
+ */
+export const SUPABASE_PLATFORM_EXTENSIONS: ReadonlyArray<{ name: string; schemas: string[] }> = [
+  { name: 'pg_graphql', schemas: ['graphql'] },
+  { name: 'supabase_vault', schemas: ['vault'] },
+  { name: 'pgsodium', schemas: ['pgsodium'] },
+  { name: 'pg_stat_statements', schemas: ['extensions'] },
+  { name: 'pgcrypto', schemas: ['extensions'] },
+  { name: 'pgjwt', schemas: ['extensions'] },
+  { name: 'uuid-ossp', schemas: ['extensions'] },
+]
+
+export function isPlatformExtension(ext: PgExtension): boolean {
+  return SUPABASE_PLATFORM_EXTENSIONS.some(p => p.name === ext.name && p.schemas.includes(ext.schema))
+}
+
+/**
  * `reachable`: the versions each of the target's extensions can be updated
  * to there. A version mismatch gets its ALTER EXTENSION only when the
  * source's is one of them: PostgreSQL has no way down a version, and a
@@ -97,9 +118,9 @@ export function diffExtensions(source: PgExtension[], target: PgExtension[], rea
     }
   }
 
-  // Enabled in target but not in source
+  // Enabled in target but not in source — unless Supabase put it there.
   for (const [name, ext] of targetMap) {
-    if (!sourceMap.has(name)) {
+    if (!sourceMap.has(name) && !isPlatformExtension(ext)) {
       issues.push({
         id: `ext-extra-${name}`,
         check: 'extensions',

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { RealtimeCheck, PLATFORM_PUBLICATIONS, PUBLICATION_SQL } from '../../src/checks/realtime.js'
+import { RealtimeCheck, PLATFORM_PUBLICATIONS, PUBLICATION_SQL, diffPublications } from '../../src/checks/realtime.js'
 import type { CheckContext } from '../../src/checks/base.js'
 import type { QueryFn } from '../../src/db.js'
 
@@ -217,5 +217,24 @@ describe('RealtimeCheck: the publication query', () => {
 
   it('is the same query the snapshot captures with', async () => {
     expect(await capturedSql()).toBe(PUBLICATION_SQL)
+  })
+})
+
+// Every Supabase project has supabase_realtime. A plain PostgreSQL source has
+// no such publication, which is not drift; the tables it streams are.
+describe('diffPublications: Supabase Realtime on a target synced from plain PostgreSQL', () => {
+  it('an empty supabase_realtime is not drift', () => {
+    expect(diffPublications([], [makeRow({ pubname: 'supabase_realtime', schemaname: null, tablename: null })])).toEqual([])
+  })
+
+  it('each table it streams is reported, with the fix that stops it', () => {
+    const issues = diffPublications([], [makeRow({ pubname: 'supabase_realtime', tablename: 'messages' })])
+    expect(issues).toHaveLength(1)
+    expect(issues[0]).toMatchObject({ severity: 'warning', title: 'Extra published table: public.messages in supabase_realtime' })
+    expect(issues[0].sql?.up).toBe('ALTER PUBLICATION "supabase_realtime" DROP TABLE "public"."messages";')
+  })
+
+  it('another publication only the target has is still reported', () => {
+    expect(diffPublications([], [makeRow({ pubname: 'analytics' })]).map(i => i.id)).toEqual(['realtime-extra-pub-analytics'])
   })
 })

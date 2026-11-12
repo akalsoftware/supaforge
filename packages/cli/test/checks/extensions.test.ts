@@ -144,3 +144,29 @@ describe('diffExtensions: an extension in a schema of its own', () => {
     expect(issue.sql?.up).toBe('CREATE EXTENSION IF NOT EXISTS "pgcrypto";')
   })
 })
+
+// A plain PostgreSQL source synced into Supabase: the extensions Supabase puts
+// in every project read as extra, with no fix, so a re-scan never came back clean.
+describe('ExtensionsCheck: what Supabase installs itself', () => {
+  const platform = [
+    makeExt({ name: 'pg_graphql', schema: 'graphql' }),
+    makeExt({ name: 'supabase_vault', schema: 'vault' }),
+    makeExt({ name: 'pgcrypto', schema: 'extensions' }),
+    makeExt({ name: 'uuid-ossp', schema: 'extensions' }),
+    makeExt({ name: 'pg_stat_statements', schema: 'extensions' }),
+  ]
+
+  it('is not drift on the target', () => {
+    expect(diffExtensions([], platform)).toEqual([])
+  })
+
+  it('is still reported in a schema Supabase does not use for it', () => {
+    const issues = diffExtensions([], [makeExt({ name: 'pgcrypto', schema: 'public' })])
+    expect(issues.map(i => i.id)).toEqual(['ext-extra-pgcrypto'])
+  })
+
+  it('is still copied to a target that lacks it', () => {
+    const issues = diffExtensions([makeExt({ name: 'pg_graphql', schema: 'graphql' })], [])
+    expect(issues.map(i => i.id)).toEqual(['ext-missing-pg_graphql'])
+  })
+})
