@@ -8,6 +8,7 @@
 import { execFile } from 'node:child_process'
 import { platform } from 'node:os'
 import { existsSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { newPgClient } from './db.js'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -181,6 +182,31 @@ export async function getServerMajorVersion(dbUrl: string): Promise<number> {
     return major
   } finally {
     await client.end()
+  }
+}
+
+/**
+ * The pg_dump and pg_restore DBDiff should render tables with, as its
+ * DBDIFF_PG_DUMP and DBDIFF_PG_RESTORE.
+ *
+ * DBDiff looks on PATH by itself, where Debian's wrapper can resolve an older
+ * client than SupaForge found (SUPAFORGE_PG_BIN, or a versioned directory). It
+ * then declined pg_dump and used its own renderer, so the same diff came out
+ * differently depending on the machine. Names the tools SupaForge resolved for
+ * the newer of the two servers; leaves alone what the user set, and returns
+ * nothing when it cannot tell, since DBDiff has its own renderer to fall back on.
+ */
+export async function dbdiffPgToolsEnv(dbUrls: string[]): Promise<Record<string, string>> {
+  if (process.env.DBDIFF_PG_DUMP || process.env.DBDIFF_PG_RESTORE) return {}
+  try {
+    const majors = await Promise.all(dbUrls.map((url) => getServerMajorVersion(url)))
+    const resolved = await resolvePgDumpPath(Math.max(...majors))
+    if (!resolved || resolved.path === 'pg_dump') return {}
+    const pgRestore = join(dirname(resolved.path), 'pg_restore')
+    if (!existsSync(pgRestore)) return {}
+    return { DBDIFF_PG_DUMP: resolved.path, DBDIFF_PG_RESTORE: pgRestore }
+  } catch {
+    return {}
   }
 }
 
