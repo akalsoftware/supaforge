@@ -8,6 +8,7 @@ import type { DriftIssue } from './types/drift'
 import { errMsg, friendlyDbError, DiagnosticError } from './utils/error'
 import { DBDIFF_EXEC_TIMEOUT_MS, DBDIFF_MAX_BUFFER } from './constants'
 import { schemaDiffIgnores } from './defaults'
+import { dbdiffPgToolsEnv } from './pg-tools'
 import { heldSnapshot, snapshotsOff } from './db.js'
 import { PLATFORM_ROLES } from './checks/roles'
 import { parseStatements, names, relationName, type Statement } from './sql-ast.js'
@@ -305,9 +306,12 @@ export async function runDbDiff(options: DbDiffOptions): Promise<DbDiffResult> {
   const timeoutMs = resolveDbDiffTimeoutMs(options.timeoutSeconds)
 
   try {
+    // A schema diff renders tables with pg_dump when DBDiff finds a usable one.
+    const pgTools = options.type === 'schema' ? await dbdiffPgToolsEnv([options.sourceUrl, options.targetUrl]) : {}
     const running = execFileAsync(command, args, {
       timeout: timeoutMs,
       maxBuffer: DBDIFF_MAX_BUFFER,
+      ...(Object.keys(pgTools).length ? { env: { ...process.env, ...pgTools } } : {}),
     })
 
     // Attach to the child's stdout for progress without changing how it is
