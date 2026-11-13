@@ -1613,3 +1613,27 @@ describe('sqlToIssues: statements that hold a semicolon and a newline', () => {
     expect(issues[0].sql!.up).toContain('SELECT (a + 1);\nEND')
   })
 })
+
+describe('an extension Supabase keeps in a schema of its own', () => {
+  const unit = (sql: string) => `-- dbdiff:unit AlterExtensionSchema uuid-ossp\n${sql}\n-- dbdiff:end`
+
+  it('is reported, with nothing to apply, when the target has it where Supabase installs it', () => {
+    const [issue] = sqlToIssues({
+      up: unit('ALTER EXTENSION "uuid-ossp" SET SCHEMA "public";'),
+      down: unit('ALTER EXTENSION "uuid-ossp" SET SCHEMA "extensions";'),
+    }, 'schema')
+    expect(issue.severity).toBe('info')
+    expect(issue.title).toBe('Extension in another schema: uuid-ossp')
+    expect(issue.sql).toBeUndefined()
+  })
+
+  it('is a change to apply for any other extension or schema', () => {
+    const [issue] = sqlToIssues({
+      up: unit('ALTER EXTENSION "uuid-ossp" SET SCHEMA "public";'),
+      down: unit('ALTER EXTENSION "uuid-ossp" SET SCHEMA "utils";'),
+    }, 'schema')
+    expect(issue.severity).toBe('warning')
+    expect(issue.title).toBe('Extension in another schema: public.uuid-ossp')
+    expect(issue.sql?.up).toBe('ALTER EXTENSION "uuid-ossp" SET SCHEMA "public";')
+  })
+})

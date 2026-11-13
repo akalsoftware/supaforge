@@ -77,7 +77,7 @@ export const SUPABASE_PLATFORM_EXTENSIONS: ReadonlyArray<{ name: string; schemas
   { name: 'uuid-ossp', schemas: ['extensions'] },
 ]
 
-export function isPlatformExtension(ext: PgExtension): boolean {
+export function isPlatformExtension(ext: Pick<PgExtension, 'name' | 'schema'>): boolean {
   return SUPABASE_PLATFORM_EXTENSIONS.some(p => p.name === ext.name && p.schemas.includes(ext.schema))
 }
 
