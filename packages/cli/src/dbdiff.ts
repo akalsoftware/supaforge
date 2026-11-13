@@ -11,6 +11,7 @@ import { schemaDiffIgnores } from './defaults'
 import { dbdiffPgToolsEnv } from './pg-tools'
 import { heldSnapshot, snapshotsOff } from './db.js'
 import { PLATFORM_ROLES } from './checks/roles'
+import { isPlatformExtension } from './checks/extensions'
 import { parseStatements, names, relationName, type Statement } from './sql-ast.js'
 import { sqlSkeleton, policiesRemoved } from './sql-deps'
 import { escapeRegex } from './utils/strings'
@@ -800,6 +801,24 @@ function platformDefaultPrivileges(sql: string): boolean {
   return name !== 'postgres' && PLATFORM_ROLES.includes(name)
 }
 
+/**
+ * A move DBDiff proposes for an extension both sides have, where the
+ * target's is one Supabase installs in a schema of its own: uuid-ossp in
+ * `extensions`, the source's in `public`. Moving Supabase's copy is not ours
+ * to do, and nothing needs it — so it is reported, not applied.
+ */
+function platformExtensionMove(upSql: string, downSql: string):
+  { name: string; sourceSchema: string; targetSchema: string } | undefined {
+  const re = /^\s*ALTER\s+EXTENSION\s+("(?:[^"]|"")+"|[\w$-]+)\s+SET\s+SCHEMA\s+("(?:[^"]|"")+"|[\w$]+)\s*;?\s*$/i
+  const up = re.exec(upSql)
+  const down = re.exec(downSql)
+  if (!up || !down) return undefined
+  const name = unquoted(up[1])
+  const targetSchema = unquoted(down[2])
+  if (unquoted(down[1]) !== name || !isPlatformExtension({ name, schema: targetSchema })) return undefined
+  return { name, sourceSchema: unquoted(up[2]), targetSchema }
+}
+
 function issuesFromUnits(
   upUnits: DbDiffUnit[],
   downUnits: DbDiffUnit[],
@@ -814,6 +833,18 @@ function issuesFromUnits(
   return pairs.map(({ up, down }, i) => {
     const upSql = up.sql
     const downSql = down?.sql ?? ''
+    const platform = platformExtensionMove(upSql, downSql)
+    if (platform) {
+      return {
+        id: `${check}-extension-schema-${i + 1}`,
+        check,
+        severity: 'info' as const,
+        title: `Extension in another schema: ${platform.name}`,
+        description: `Extension "${platform.name}" is in schema ${platform.sourceSchema} on the source and in `
+          + `${platform.targetSchema} on the target, where Supabase installs it. It is the same extension, and `
+          + 'what uses it works either way; nothing to apply.',
+      }
+    }
     const statements = splitStatements(upSql)
     const replaced = replacedObject(up, statements)
     const manualOnly = manualEnumChange(up)
@@ -1695,6 +1726,7 @@ const SCHEMA_RULES: SummaryRule[] = [
   { match: /^\s*COMMENT\s+ON\b/i, label: 'Comment changed', name: commentLabel },
   { match: /^\s*CREATE\s+EXTENSION\b/i, label: 'Extension missing', name: extensionLabel },
   { match: /^\s*DROP\s+EXTENSION\b/i, label: 'Extra extension', name: extensionLabel },
+  { match: /^\s*ALTER\s+EXTENSION\b[^;]*\bSET\s+SCHEMA\b/is, label: 'Extension in another schema', name: extensionLabel },
 
   { match: /^\s*CREATE\s+COLLATION\b/i, label: 'Collation missing', name: named(AFTER.collation) },
   { match: /^\s*ALTER\s+COLLATION\b/i, label: 'Collation altered', name: named(AFTER.collation) },
