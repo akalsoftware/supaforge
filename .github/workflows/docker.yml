@@ -3,6 +3,9 @@ name: Docker image
 # ghcr.io/akalsoftware/supaforge, for amd64 and arm64: a published SupaForge
 # version with the PostgreSQL 18 client tools. Called by release.yml for each
 # release, or run by hand for any published version.
+#
+# Each architecture is built and tested on its own native runner, without
+# emulation, and pushed by digest; `publish` then tags both as one image.
 on:
   workflow_call:
     inputs:
@@ -21,8 +24,17 @@ permissions:
 
 jobs:
   image:
-    name: ghcr.io/akalsoftware/supaforge (${{ inputs.version }})
-    runs-on: ubuntu-latest
+    name: ${{ matrix.platform }} (${{ inputs.version }})
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+            node_arch: x64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            node_arch: arm64
+    runs-on: ${{ matrix.runner }}
     services:
       postgres:
         image: postgres:17
@@ -38,7 +50,14 @@ jobs:
 
       # release.yml passes the tag, v0.0.33; npm and the image use 0.0.33.
       - name: Version
-        run: echo "VERSION=${VERSION#v}" >> "$GITHUB_ENV"
+        run: |
+          echo "VERSION=${VERSION#v}" >> "$GITHUB_ENV"
+          echo "ARCH=${PLATFORM#linux/}" >> "$GITHUB_ENV"
+        env:
+          PLATFORM: ${{ matrix.platform }}
+
+      - name: Node's name for the architecture
+        run: echo "NODE_ARCH=${{ matrix.node_arch }}" >> "$GITHUB_ENV"
 
       # Built from npm, which can lag a publish by a moment.
       - name: Wait for npm to serve the version
@@ -49,7 +68,6 @@ jobs:
           done
           echo "::error::@akal/supaforge@$VERSION is not on npm"; exit 1
 
-      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
       - name: Build for testing
@@ -57,18 +75,18 @@ jobs:
         with:
           context: packages/cli/docker
           build-args: SUPAFORGE_VERSION=${{ env.VERSION }}
-          platforms: linux/amd64
+          platforms: ${{ matrix.platform }}
           load: true
           tags: supaforge:test
-          cache-to: type=gha,mode=max
-          cache-from: type=gha
+          cache-to: type=gha,mode=max,scope=${{ env.ARCH }}
+          cache-from: type=gha,scope=${{ env.ARCH }}
 
       # The image as a user runs it: a project mounted at /work, drift found,
       # and the version and both tools it promises.
       - name: Test
         run: |
           set -euo pipefail
-          docker run --rm supaforge:test --version | grep -F "supaforge/$VERSION"
+          docker run --rm supaforge:test --version | grep -F "supaforge/$VERSION linux-$NODE_ARCH"
           docker run --rm --entrypoint dbdiff supaforge:test --version
           docker run --rm --entrypoint pg_dump supaforge:test --version
           psql_() { docker run --rm --network host -e PGPASSWORD=pw --entrypoint psql supaforge:test -h localhost -U postgres "$@"; }
@@ -85,22 +103,76 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Tags
-        id: tags
-        run: |
-          tags="$IMAGE:$VERSION"
-          # `latest` follows stable releases only.
-          [[ "$VERSION" == *-* ]] || tags="$tags,$IMAGE:latest"
-          echo "tags=$tags" >> "$GITHUB_OUTPUT"
-
-      - name: Build and push
+      # Pushed without a tag; `publish` tags both architectures together.
+      - name: Push by digest
+        id: push
         uses: docker/build-push-action@v6
         with:
           context: packages/cli/docker
           build-args: SUPAFORGE_VERSION=${{ env.VERSION }}
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.tags.outputs.tags }}
-          cache-from: type=gha
+          platforms: ${{ matrix.platform }}
+          cache-from: type=gha,scope=${{ env.ARCH }}
           labels: |
             org.opencontainers.image.source=https://github.com/akalsoftware/supaforge
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+
+      - name: Save the digest
+        run: |
+          mkdir -p digests
+          touch "digests/${DIGEST#sha256:}"
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ env.ARCH }}
+          path: digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: ghcr.io/akalsoftware/supaforge (${{ inputs.version }})
+    needs: image
+    runs-on: ubuntu-24.04
+    env:
+      VERSION: ${{ inputs.version }}
+      IMAGE: ghcr.io/akalsoftware/supaforge
+    steps:
+      - name: Version
+        run: echo "VERSION=${VERSION#v}" >> "$GITHUB_ENV"
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag both architectures as one image
+        working-directory: digests
+        run: |
+          set -euo pipefail
+          digests=(*)
+          [ "${#digests[@]}" = 2 ] || { echo "::error::expected 2 digests, found ${#digests[@]}"; exit 1; }
+          refs=("${digests[@]/#/$IMAGE@sha256:}")
+          tags=(-t "$IMAGE:$VERSION")
+          # `latest` follows stable releases only.
+          [[ "$VERSION" == *-* ]] || tags+=(-t "$IMAGE:latest")
+          docker buildx imagetools create "${tags[@]}" \
+            --annotation "index:org.opencontainers.image.source=https://github.com/akalsoftware/supaforge" \
+            --annotation "index:org.opencontainers.image.description=Find and fix drift between Supabase environments" \
+            --annotation "index:org.opencontainers.image.licenses=MIT" \
+            "${refs[@]}"
+
+      - name: Check both architectures are tagged
+        run: |
+          platforms=$(docker buildx imagetools inspect "$IMAGE:$VERSION" --format '{{json .Manifest}}' | jq -r '[.manifests[].platform | select(.os == "linux") | .architecture] | sort | join(",")')
+          echo "$IMAGE:$VERSION: $platforms"
+          [ "$platforms" = "amd64,arm64" ]
