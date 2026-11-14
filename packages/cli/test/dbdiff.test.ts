@@ -18,7 +18,10 @@ import {
   parseDbDiffProgress,
   extractQualifiedName,
   dbdiffNotInstalled,
+  platformExtensionMoves,
+  withPlatformExtensionCalls,
 } from '../src/dbdiff.js'
+import type { DriftIssue } from '../src/types/drift.js'
 import { DBDIFF_EXEC_TIMEOUT_MS } from '../src/constants.js'
 
 describe('resolveDbDiffTimeoutMs', () => {
@@ -1627,6 +1630,14 @@ describe('an extension Supabase keeps in a schema of its own', () => {
     expect(issue.sql).toBeUndefined()
   })
 
+  it('names the extension and both schemas, for the calls to follow it', () => {
+    const issues = sqlToIssues({
+      up: unit('ALTER EXTENSION "uuid-ossp" SET SCHEMA "public";'),
+      down: unit('ALTER EXTENSION "uuid-ossp" SET SCHEMA "extensions";'),
+    }, 'schema')
+    expect(platformExtensionMoves(issues)).toEqual([{ name: 'uuid-ossp', sourceSchema: 'public', targetSchema: 'extensions' }])
+  })
+
   it('is a change to apply for any other extension or schema', () => {
     const [issue] = sqlToIssues({
       up: unit('ALTER EXTENSION "uuid-ossp" SET SCHEMA "public";'),
@@ -1635,5 +1646,45 @@ describe('an extension Supabase keeps in a schema of its own', () => {
     expect(issue.severity).toBe('warning')
     expect(issue.title).toBe('Extension in another schema: public.uuid-ossp')
     expect(issue.sql?.up).toBe('ALTER EXTENSION "uuid-ossp" SET SCHEMA "public";')
+  })
+})
+
+describe('calls to a platform extension left where Supabase installs it', () => {
+  const moves = [{ name: 'uuid-ossp', sourceSchema: 'public', targetSchema: 'extensions' }]
+  const owned = new Map([['uuid-ossp', new Set(['uuid_generate_v1', 'uuid_generate_v4'])]])
+  const issue = (up: string, down = 'DROP TABLE "public"."t";'): DriftIssue => ({
+    id: 'schema-create_table-1', check: 'schema', severity: 'warning',
+    title: 'Table missing: public.t', description: 'Table exists in source but not in target.', sql: { up, down },
+  })
+
+  it('are written through the schema the target keeps the extension in, and said so', () => {
+    const [out] = withPlatformExtensionCalls([issue(
+      'CREATE TABLE "public"."t" ("id" uuid DEFAULT public.uuid_generate_v1() NOT NULL, "k" uuid DEFAULT "public"."uuid_generate_v4" ());',
+      'ALTER TABLE "public"."t" ALTER COLUMN "id" SET DEFAULT public.uuid_generate_v1();',
+    )], moves, owned)
+    expect(out.sql!.up).toBe('CREATE TABLE "public"."t" ("id" uuid DEFAULT extensions.uuid_generate_v1() NOT NULL, "k" uuid DEFAULT extensions."uuid_generate_v4" ());')
+    expect(out.sql!.down).toBe('ALTER TABLE "public"."t" ALTER COLUMN "id" SET DEFAULT extensions.uuid_generate_v1();')
+    expect(out.description).toContain('public.uuid_generate_v1() → extensions.uuid_generate_v1()')
+    expect(out.description).toContain('public.uuid_generate_v4() → extensions.uuid_generate_v4()')
+  })
+
+  it('are left alone in a routine body, a string or a comment', () => {
+    const up = "CREATE FUNCTION public.f() RETURNS uuid LANGUAGE sql AS $$ SELECT public.uuid_generate_v1() $$;\n"
+      + "COMMENT ON TABLE public.t IS 'uses public.uuid_generate_v1()'; -- public.uuid_generate_v1()"
+    const [out] = withPlatformExtensionCalls([issue(up)], moves, owned)
+    expect(out.sql!.up).toBe(up)
+    expect(out.description).toBe('Table exists in source but not in target.')
+  })
+
+  it('are left alone when not the extension\'s, or not in the source\'s schema', () => {
+    const up = 'CREATE TABLE public.t (a uuid DEFAULT public.my_uuid(), b uuid DEFAULT other.uuid_generate_v1(), c uuid DEFAULT gen_random_uuid());'
+    const [out] = withPlatformExtensionCalls([issue(up)], moves, owned)
+    expect(out.sql!.up).toBe(up)
+  })
+
+  it('are left alone when the target\'s functions could not be read', () => {
+    const up = 'CREATE TABLE public.t (a uuid DEFAULT public.uuid_generate_v1());'
+    const [out] = withPlatformExtensionCalls([issue(up)], moves, new Map())
+    expect(out.sql!.up).toBe(up)
   })
 })

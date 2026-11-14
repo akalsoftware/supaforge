@@ -1,7 +1,10 @@
 import type { QueryFn } from '../db'
 import { pgQuery } from '../db'
 import type { DriftIssue } from '../types/drift'
-import { runDbDiff, schemaNotices, sqlToIssues, withoutAbsentRoles, type DbDiffOptions } from '../dbdiff'
+import {
+  runDbDiff, schemaNotices, sqlToIssues, withoutAbsentRoles, platformExtensionMoves, withPlatformExtensionCalls,
+  type DbDiffOptions, type PlatformExtensionMove,
+} from '../dbdiff'
 import { Check, CheckSkipped, type CheckContext } from './base'
 import { DEFAULT_IGNORE_SCHEMAS } from '../defaults'
 
@@ -48,7 +51,11 @@ export class SchemaCheck extends Check {
         this.fetchIgnoredSchemaTables(ctx.target.dbUrl, ignoreSchemas),
       ])
       for (const notice of schemaNotices(result.notices ?? [])) ctx.onNotice?.(notice)
-      const issues = sqlToIssues(result, 'schema', ignoreSchemas, ignoredSchemaTables)
+      let issues = sqlToIssues(result, 'schema', ignoreSchemas, ignoredSchemaTables)
+      const moves = platformExtensionMoves(issues)
+      if (moves.length) {
+        issues = withPlatformExtensionCalls(issues, moves, await this.extensionFunctions(ctx.target.dbUrl, moves))
+      }
       const roles = await this.targetRoles(ctx.target.dbUrl)
       return roles?.size ? withoutAbsentRoles(issues, roles) : issues
     } catch (err) {
@@ -69,6 +76,27 @@ export class SchemaCheck extends Check {
    * Returns a Set of lowercase table names, bare and schema-qualified. Fails silently so that a transient
    * DB error here never blocks the main schema diff.
    */
+  /**
+   * The functions each extension owns on the target, by name. Unreadable,
+   * none: the calls are then left as the source wrote them.
+   */
+  private async extensionFunctions(dbUrl: string, moves: PlatformExtensionMove[]): Promise<Map<string, Set<string>>> {
+    const owned = new Map<string, Set<string>>()
+    try {
+      const rows = await this.queryFn(dbUrl, `SELECT e.extname, p.proname
+        FROM pg_depend d
+        JOIN pg_extension e ON e.oid = d.refobjid
+        JOIN pg_proc p ON p.oid = d.objid
+        WHERE d.classid = 'pg_proc'::regclass AND d.refclassid = 'pg_extension'::regclass
+          AND d.deptype = 'e' AND e.extname = ANY($1)`, [moves.map(m => m.name)]) as Array<{ extname: string; proname: string }>
+      for (const { extname, proname } of rows) {
+        if (!owned.has(extname)) owned.set(extname, new Set())
+        owned.get(extname)!.add(proname)
+      }
+    } catch { /* left as written */ }
+    return owned
+  }
+
   /** The target's roles, or undefined when they cannot be read. */
   private async targetRoles(dbUrl: string): Promise<Set<string> | undefined> {
     try {
