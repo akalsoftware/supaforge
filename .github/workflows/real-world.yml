@@ -74,7 +74,7 @@ jobs:
         if: env.DBDIFF_REF != ''
         uses: actions/checkout@v4
         with:
-          repository: akalsoftware/dbdiff
+          repository: DBDiff/DBDiff
           ref: ${{ env.DBDIFF_REF }}
           path: dbdiff
       - name: Install DBDiff
