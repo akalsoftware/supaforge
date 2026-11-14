@@ -156,7 +156,11 @@ state(){ local sc; sc=$(schemas "$1"); [ -n "$sc" ] || { echo '{}'; return; }
 rows(){ q "$1" -c "SELECT format('%I.%I', n.nspname, c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE c.relkind = 'r' AND NOT c.relispartition AND n.nspname = ANY (ARRAY[$(schemas "$1")]) ORDER BY 1" \
   | while read -r t; do echo "$t $(q "$1" -c "SELECT count(*) || ' ' || coalesce(md5(string_agg(x::text, '|' ORDER BY x::text)), '-') FROM $t x")"; done; }
-issues(){ jq '[.. | objects | select(has("issues") and (.check // .name) != "rls-coverage") | .issues | length] | add // 0' "$1" 2>/dev/null || echo '?'; }
+# Not counted: RLS coverage (the datasets have no policies), and the note that
+# a Supabase platform extension stays in Supabase's schema, which is reported
+# by design with nothing to apply.
+issues(){ jq '[.. | objects | select(has("issues") and (.check // .name) != "rls-coverage") | .issues[]
+    | select((.severity == "info" and (.id | test("-extension-schema-[0-9]+$")) and (has("sql") | not)) | not)] | length' "$1" 2>/dev/null || echo '?'; }
 SAME=$([ "$(major $SOURCE)" = "$(major $TARGET)" ] && echo 1 || echo 0)
 
 record(){ printf '%s\t%s\t%s\t%s\n' "$DATASET $SOURCE>$TARGET" "$1" "$2" "$3" >> "$RES"; printf '  %-8s %-4s %s\n' "$1" "$2" "$3"; }
