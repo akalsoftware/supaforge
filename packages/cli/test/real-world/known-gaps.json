@@ -1,7 +1,7 @@
 {
   "adventureworks pg17>pg18 drift": "--prove refuses the drift: on PostgreSQL 18 a renamed table keeps NOT NULL constraint names from its old name, while the proof's fresh copy of the PostgreSQL 17 source names them after the new one",
   "adventureworks pg17>pg18 drift-prove": "as drift",
-  "adventureworks pg17>sb15 sync": "Supabase installs uuid-ossp in its extensions schema; the source has it in public, so the extension and every default calling uuid_generate_v1() read as changed",
-  "gitlab pg17>pg17 sync": "DBDiff: partitions' indexes take generated names and lose their storage options",
+  "adventureworks pg17>sb15 sync": "Supabase keeps uuid-ossp in its extensions schema, where SupaForge leaves it; the new tables' defaults call public.uuid_generate_v1(), which the target does not have, so they are not created",
+  "gitlab pg17>pg17 sync": "DBDiff's pg_dump renderer adds a same-named constraint of another table to a table's DDL (application_settings takes namespace_settings' check), so the table cannot be created before the other one",
   "pagila pv18>pv18 clone": "clone copies with --no-acl, so the source's GRANT ALL ON SCHEMA public TO PUBLIC is not carried"
 }
