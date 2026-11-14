@@ -13,7 +13,7 @@ import { heldSnapshot, snapshotsOff } from './db.js'
 import { PLATFORM_ROLES } from './checks/roles'
 import { isPlatformExtension } from './checks/extensions'
 import { parseStatements, names, relationName, type Statement } from './sql-ast.js'
-import { sqlSkeleton, policiesRemoved } from './sql-deps'
+import { sqlSkeleton, policiesRemoved, codeMask } from './sql-deps'
 import { escapeRegex } from './utils/strings'
 import { pairUnits, parseUnits, REPLACING_KINDS, type DbDiffUnit } from './dbdiff-units'
 import { splitSqlStatements } from './utils/sql-split.js'
@@ -819,6 +819,82 @@ function platformExtensionMove(upSql: string, downSql: string):
   return { name, sourceSchema: unquoted(up[2]), targetSchema }
 }
 
+/** A platform extension left where Supabase installs it, in another schema than the source's. */
+export interface PlatformExtensionMove {
+  name: string
+  sourceSchema: string
+  targetSchema: string
+}
+
+/** The platform extensions a scan's findings leave in another schema than the source's. */
+export function platformExtensionMoves(issues: DriftIssue[]): PlatformExtensionMove[] {
+  return issues.flatMap((issue) => {
+    if (!/-extension-schema-\d+$/.test(issue.id) || issue.sql) return []
+    const source = issue.sourceValue as { name?: string; schema?: string } | undefined
+    const target = issue.targetValue as { schema?: string } | undefined
+    return source?.name && source.schema && target?.schema
+      ? [{ name: source.name, sourceSchema: source.schema, targetSchema: target.schema }]
+      : []
+  })
+}
+
+const quoteIdent = (name: string) => /^[a-z_][a-z0-9_$]*$/.test(name) ? name : `"${name.replace(/"/g, '""')}"`
+
+/**
+ * Calls to a platform extension's functions, made through the schema the
+ * source keeps the extension in, written through the target's instead.
+ *
+ * SupaForge leaves uuid-ossp and its like where Supabase installs them, and
+ * DBDiff compares `public.uuid_generate_v1()` and
+ * `extensions.uuid_generate_v1()` as equal when the same extension owns both.
+ * But a table created from the source's DDL still names `public`, where the
+ * target has no such function, and is not created. So each call is rewritten,
+ * in UP and DOWN, and the finding says so.
+ *
+ * Only code is rewritten: a routine's body, a string and a comment are left
+ * as they were. `functions` are the names each extension owns on the target.
+ */
+export function withPlatformExtensionCalls(
+  issues: DriftIssue[],
+  moves: PlatformExtensionMove[],
+  functions: Map<string, ReadonlySet<string>>,
+): DriftIssue[] {
+  const rules = moves.flatMap(move => [...(functions.get(move.name) ?? [])].map(fn => ({ move, fn })))
+  if (!rules.length) return issues
+  const nameRe = String.raw`("(?:[^"]|"")+"|[\w$]+)`
+  const call = new RegExp(String.raw`${nameRe}(\s*\.\s*)${nameRe}(?=\s*\()`, 'g')
+  const unq = (part: string) => part.startsWith('"') ? part.slice(1, -1).replace(/""/g, '"') : part.toLowerCase()
+
+  const rewrite = (sql: string, seen: Set<string>): string => {
+    const mask = codeMask(sql)
+    let out = ''
+    let at = 0
+    for (const m of mask.matchAll(call)) {
+      const schema = unq(m[1])
+      const fn = unq(m[3])
+      const rule = rules.find(r => r.move.sourceSchema === schema && r.fn === fn)
+      if (!rule) continue
+      out += sql.slice(at, m.index) + quoteIdent(rule.move.targetSchema) + m[2] + sql.slice(m.index + m[1].length + m[2].length, m.index + m[0].length)
+      at = m.index + m[0].length
+      seen.add(`${quoteIdent(schema)}.${quoteIdent(fn)}() → ${quoteIdent(rule.move.targetSchema)}.${quoteIdent(fn)}()`)
+    }
+    return out + sql.slice(at)
+  }
+
+  return issues.map((issue) => {
+    if (!issue.sql) return issue
+    const seen = new Set<string>()
+    const up = rewrite(issue.sql.up, seen)
+    const down = rewrite(issue.sql.down, seen)
+    if (!seen.size) return issue
+    return {
+      ...issue,
+      description: `${issue.description} Calls written for where the target keeps a Supabase extension: ${[...seen].join(', ')}.`,
+      sql: { ...issue.sql, up, down },
+    }
+  })
+}
+
 function issuesFromUnits(
   upUnits: DbDiffUnit[],
   downUnits: DbDiffUnit[],
@@ -843,6 +919,8 @@ function issuesFromUnits(
         description: `Extension "${platform.name}" is in schema ${platform.sourceSchema} on the source and in `
           + `${platform.targetSchema} on the target, where Supabase installs it. It is the same extension, and `
           + 'what uses it works either way; nothing to apply.',
+        sourceValue: { name: platform.name, schema: platform.sourceSchema },
+        targetValue: { name: platform.name, schema: platform.targetSchema },
       }
     }
     const statements = splitStatements(upSql)

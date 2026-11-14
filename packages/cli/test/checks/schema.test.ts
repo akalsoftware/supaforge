@@ -277,3 +277,37 @@ describe('SchemaCheck honours the table filter (issue #43)', () => {
     expect(calls[0].ignoreSchemas).not.toContain('*_audit')
   })
 })
+
+describe('SchemaCheck: a platform extension left where Supabase installs it', () => {
+  const unit = (kind: string, name: string, sql: string) => `-- dbdiff:unit ${kind} ${name}\n${sql}\n-- dbdiff:end\n`
+  const runFn: RunDbDiffFn = async () => ({
+    up: unit('AlterExtensionSchema', 'uuid-ossp', 'ALTER EXTENSION "uuid-ossp" SET SCHEMA "public";')
+      + unit('CreateTable', 'public.t', 'CREATE TABLE "public"."t" ("id" uuid DEFAULT public.uuid_generate_v1() NOT NULL);'),
+    down: unit('AlterExtensionSchema', 'uuid-ossp', 'ALTER EXTENSION "uuid-ossp" SET SCHEMA "extensions";')
+      + unit('CreateTable', 'public.t', 'DROP TABLE "public"."t";'),
+  })
+
+  it('creates tables calling its functions through the schema the target keeps it in', async () => {
+    const asked: unknown[][] = []
+    const queryFn: QueryFn = async (_url, sql, params) => {
+      if (!/pg_depend/.test(sql)) return []
+      asked.push(params ?? [])
+      return [{ extname: 'uuid-ossp', proname: 'uuid_generate_v1' }]
+    }
+    const issues = await new SchemaCheck(runFn, queryFn).scan(mockContext())
+    expect(asked).toEqual([[['uuid-ossp']]])
+    const create = issues.find(i => i.sql?.up.includes('CREATE TABLE'))!
+    expect(create.sql!.up).toContain('DEFAULT extensions.uuid_generate_v1() NOT NULL')
+    expect(create.description).toContain('public.uuid_generate_v1() → extensions.uuid_generate_v1()')
+    expect(issues.find(i => i.title === 'Extension in another schema: uuid-ossp')?.sql).toBeUndefined()
+  })
+
+  it('leaves the calls as written when the target cannot be read', async () => {
+    const queryFn: QueryFn = async (_url, sql) => {
+      if (/pg_depend/.test(sql)) throw new Error('permission denied')
+      return []
+    }
+    const issues = await new SchemaCheck(runFn, queryFn).scan(mockContext())
+    expect(issues.find(i => i.sql?.up.includes('CREATE TABLE'))!.sql!.up).toContain('DEFAULT public.uuid_generate_v1()')
+  })
+})

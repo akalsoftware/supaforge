@@ -168,6 +168,21 @@ export function sqlSkeleton(sql: string): string {
     .replace(BLOCK_COMMENT, ' ')
 }
 
+/**
+ * A statement with its routine bodies, literals and comments overwritten by
+ * spaces, every other character where it was: a match found in the mask is at
+ * the same offset in the statement, so it can be edited there, and only where
+ * it is code.
+ */
+export function codeMask(sql: string): string {
+  const blank = (m: string) => m.replace(/[^\n]/g, ' ')
+  return sql
+    .replace(DOLLAR_BODY, blank)
+    .replace(STRING_LITERAL, blank)
+    .replace(LINE_COMMENT, blank)
+    .replace(BLOCK_COMMENT, blank)
+}
+
 // ─── Identifiers ─────────────────────────────────────────────────────────────
 
 /** One name, quoted (its own quotes doubled) or not. */
