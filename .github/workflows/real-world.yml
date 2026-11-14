@@ -11,11 +11,20 @@ name: Real-world databases
 # and on a listed one that starts passing — so a DBDiff bump that fixes one
 # has to say so. Runs nightly, on demand, and on pull requests that change
 # the script, its gaps, or the lockfile.
+#
+# Dispatched with dbdiff_ref, it runs against that branch, tag or commit of
+# DBDiff instead of the pinned release, so a DBDiff fix can be proved on these
+# databases before it is released. A gap it closes then shows as NOW PASSES.
 
 on:
   schedule:
     - cron: '45 3 * * *'
   workflow_dispatch:
+    inputs:
+      dbdiff_ref:
+        description: DBDiff branch, tag or commit to run instead of the pinned release
+        required: false
+        default: ''
   pull_request:
     branches: [main, develop]
     paths:
@@ -32,6 +41,8 @@ jobs:
     name: ${{ matrix.dataset }} ${{ matrix.source }}>${{ matrix.target }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      DBDIFF_REF: ${{ inputs.dbdiff_ref }}
     strategy:
       fail-fast: false
       matrix:
@@ -52,6 +63,27 @@ jobs:
           node-version: 22.x
           cache: npm
           cache-dependency-path: packages/cli/package-lock.json
+      - name: Setup PHP
+        if: env.DBDIFF_REF != ''
+        uses: shivammathur/setup-php@44454db4f0199b8b9685a5d763dc37cbf79108e1 # v2
+        with:
+          php-version: '8.3'
+          extensions: pdo, pdo_pgsql, json
+          coverage: none
+      - name: Checkout DBDiff
+        if: env.DBDIFF_REF != ''
+        uses: actions/checkout@v4
+        with:
+          repository: DBDiff/DBDiff
+          ref: ${{ env.DBDIFF_REF }}
+          path: dbdiff
+      - name: Install DBDiff
+        if: env.DBDIFF_REF != ''
+        working-directory: dbdiff
+        run: |
+          composer install --prefer-dist --no-progress --no-dev
+          echo "SUPAFORGE_DBDIFF_BIN=$PWD/dbdiff" >> "$GITHUB_ENV"
+          echo "DBDiff $(git rev-parse --short HEAD) ($DBDIFF_REF) replaces the pinned release" >> "$GITHUB_STEP_SUMMARY"
       # --prove, clone and snapshot need a pg_dump at least as new as the server.
       - name: Install PostgreSQL client 18
         run: |
@@ -62,6 +94,9 @@ jobs:
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
             | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
           sudo apt-get update -qq
+          # As in DBDiff's CI: the runner's libpq-dev and pgdg's both own
+          # pg_config; the client needs only libpq5.
+          if [ -n "$DBDIFF_REF" ]; then sudo apt-get remove -y -qq libpq-dev; fi
           sudo apt-get install -y --no-install-recommends postgresql-client-18
       - name: Fetch Supabase's image
         if: matrix.target == 'sb15'
