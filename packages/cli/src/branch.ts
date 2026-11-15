@@ -10,6 +10,7 @@ import { CLONE_STUBS_SQL } from './stubs'
 import { quoteIdent, quoteName } from './utils/sql'
 import { SUPABASE_PLATFORM_SCHEMAS } from './defaults'
 import { restorePrivileges, type NotGranted } from './clone-privileges.js'
+import { pgToolConnection } from './utils/pg-env.js'
 
 /** Prefix for branch database names created by SupaForge. */
 export const BRANCH_DB_PREFIX = 'supaforge_branch_'
@@ -246,20 +247,21 @@ async function tryDumpRestore(
 
   // Privileges are kept: this is the same server, so every role they name is
   // here, as they are in a template copy.
-  const dumpArgs = ['--format=custom', '--no-owner', sourceUrl]
+  const source = pgToolConnection(sourceUrl)
+  const dumpArgs = ['--format=custom', '--no-owner', source.url]
   if (schemaOnly) dumpArgs.unshift('--schema-only')
 
-  const targetUrl = replaceDbName(sourceUrl, newDb)
+  const target = pgToolConnection(replaceDbName(sourceUrl, newDb))
   const restoreArgs = [
     '--format=custom',
     '--no-owner',
-    `--dbname=${targetUrl}`,
+    `--dbname=${target.url}`,
   ]
 
   try {
     await new Promise<void>((resolve, reject) => {
-      const dump = spawn(pgDumpPath, dumpArgs, { stdio: ['ignore', 'pipe', 'pipe'] })
-      const restore = spawn(pgRestorePath, restoreArgs, { stdio: [dump.stdout, 'pipe', 'pipe'] })
+      const dump = spawn(pgDumpPath, dumpArgs, { stdio: ['ignore', 'pipe', 'pipe'], env: source.env })
+      const restore = spawn(pgRestorePath, restoreArgs, { stdio: [dump.stdout, 'pipe', 'pipe'], env: target.env })
 
       let restoreStderr = ''
       restore.stderr?.on('data', (chunk: Buffer) => { restoreStderr += chunk.toString() })
@@ -545,20 +547,22 @@ export async function cloneRemoteToLocal(opts: CloneRemoteOptions): Promise<Clon
     }
   }
 
-  dumpArgs.push(opts.remoteUrl)
+  const remote = pgToolConnection(opts.remoteUrl)
+  const local = pgToolConnection(localDbUrl)
+  dumpArgs.push(remote.url)
 
   const restoreArgs = [
     '--format=custom',
     '--no-owner',
     '--no-acl',
-    `--dbname=${localDbUrl}`,
+    `--dbname=${local.url}`,
   ]
 
   let restoreLog = ''
   try {
     restoreLog = await new Promise<string>((resolve, reject) => {
-      const dump = spawn(compat.pgDumpPath, dumpArgs, { stdio: ['ignore', 'pipe', 'pipe'] })
-      const restore = spawn(compat.pgRestorePath, restoreArgs, { stdio: ['pipe', 'pipe', 'pipe'] })
+      const dump = spawn(compat.pgDumpPath, dumpArgs, { stdio: ['ignore', 'pipe', 'pipe'], env: remote.env })
+      const restore = spawn(compat.pgRestorePath, restoreArgs, { stdio: ['pipe', 'pipe', 'pipe'], env: local.env })
 
       // Manual pipe so we can count bytes flowing through
       let bytesTransferred = 0

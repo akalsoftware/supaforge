@@ -1,4 +1,4 @@
-import { mkdir, writeFile, readFile, readdir, rm } from 'node:fs/promises'
+import { mkdir, writeFile, readFile, readdir, rm, chmod } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { execFile as execFileCb } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -17,6 +17,7 @@ import { ok, warn, dim } from './ui'
 import { SUPABASE_PLATFORM_SCHEMAS } from './defaults'
 import { SUPABASE_MGMT_API, SUPAFORGE_DIR, SNAPSHOTS_SUBDIR, MIGRATIONS_SUBDIR } from './constants'
 import { httpStatus, readJsonArray, readJsonObject } from './utils/http.js'
+import { pgToolConnection } from './utils/pg-env.js'
 
 const execFile = promisify(execFileCb)
 
@@ -67,7 +68,10 @@ export async function captureSnapshot(options: SnapshotOptions): Promise<Snapsho
   const dir = options.outputDir
     ? join(resolve(options.outputDir), timestamp)
     : snapshotDir(cwd, timestamp)
-  await mkdir(dir, { recursive: true })
+  // A snapshot can hold table rows: readable by this user only. The mode
+  // applies to the directories this creates; an existing parent keeps its own.
+  await mkdir(dir, { recursive: true, mode: 0o700 })
+  await chmod(dir, 0o700)
 
   const queryFn = options.queryFn ?? pgQuery
   const fetchFn = options.fetchFn ?? globalThis.fetch.bind(globalThis)
@@ -255,11 +259,12 @@ async function captureSchemaSql(
       }
     }
 
+    const conn = pgToolConnection(dbUrl)
     const { stdout } = await execFile(resolved.path, [
-      dbUrl, '--schema-only', '--no-owner', '--no-privileges',
+      conn.url, '--schema-only', '--no-owner', '--no-privileges',
       // Quoted: pg_dump reads --schema as a pattern, folding `App Data` to lower case.
       ...schemas.map(s => `--schema=${quoteName(s)}`),
-    ], { maxBuffer: 256 * 1024 * 1024, timeout: 300_000 })
+    ], { maxBuffer: 256 * 1024 * 1024, timeout: 300_000, env: conn.env })
 
     if (stdout.trim().length === 0) {
       return { sqlSkipReason: 'pg_dump produced an empty schema dump' }

@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { pgQuery } from './db'
 import { parseStatements, relationName } from './sql-ast.js'
 import { quoteIdent, quoteLiteral } from './utils/sql.js'
+import { pgToolConnection } from './utils/pg-env.js'
 
 /**
  * The data half of a proof: that the rows survive the fixes.
@@ -72,8 +73,10 @@ export async function sampleInto(psql: string, fromUrl: string, intoUrl: string,
 
 function pipeCopy(psql: string, fromUrl: string, intoUrl: string, out: string, into: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const reader = spawn(psql, [fromUrl, '-X', '-q', '-v', 'ON_ERROR_STOP=1', '-c', out], { stdio: ['ignore', 'pipe', 'pipe'] })
-    const writer = spawn(psql, [intoUrl, '-X', '-q', '-v', 'ON_ERROR_STOP=1', '-f', '-'], { stdio: ['pipe', 'pipe', 'pipe'] })
+    const reading = pgToolConnection(fromUrl)
+    const writing = pgToolConnection(intoUrl)
+    const reader = spawn(psql, [reading.url, '-X', '-q', '-v', 'ON_ERROR_STOP=1', '-c', out], { stdio: ['ignore', 'pipe', 'pipe'], env: reading.env })
+    const writer = spawn(psql, [writing.url, '-X', '-q', '-v', 'ON_ERROR_STOP=1', '-f', '-'], { stdio: ['pipe', 'pipe', 'pipe'], env: writing.env })
     let stderr = ''
     reader.stderr.on('data', (d: Buffer) => { stderr += d.toString() })
     writer.stderr.on('data', (d: Buffer) => { stderr += d.toString() })
