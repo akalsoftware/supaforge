@@ -291,8 +291,9 @@ describe('SchemaCheck: a platform extension left where Supabase installs it', ()
     const asked: unknown[][] = []
     const queryFn: QueryFn = async (_url, sql, params) => {
       if (!/pg_depend/.test(sql)) return []
+      if (/pg_namespace/.test(sql)) return [] // none of the user's own
       asked.push(params ?? [])
-      return [{ extname: 'uuid-ossp', proname: 'uuid_generate_v1' }]
+      return [{ extname: 'uuid-ossp', proname: 'uuid_generate_v1', pronargs: 0, pronargdefaults: 0, variadic: false }]
     }
     const issues = await new SchemaCheck(runFn, queryFn).scan(mockContext())
     expect(asked).toEqual([[['uuid-ossp']]])
