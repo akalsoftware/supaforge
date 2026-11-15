@@ -1,3 +1,1 @@
-{
-  "pagila pv18>pv18 clone": "clone copies with --no-acl, so the source's GRANT ALL ON SCHEMA public TO PUBLIC is not carried"
-}
+{}
