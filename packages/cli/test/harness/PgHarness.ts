@@ -198,9 +198,17 @@ export class PgHarness {
       // Host networking: avoids podman's bridge/netavark dependency entirely.
       '--network=host',
       '-e', `POSTGRES_PASSWORD=${this.password}`,
-      '-e', `PGPORT=${this.port(role)}`,
+      // Supabase's image reads its settings (preloaded libraries) from
+      // /etc/postgresql, its init scripts want a JWT secret, and they connect
+      // on the default port's socket — so its port is given to the final
+      // server only. Initialisation listens on no TCP port at all.
+      ...(isSupabaseImage(this.imageFor(role))
+        ? ['-e', 'JWT_SECRET=test-only-jwt-secret-at-least-32-characters-long']
+        : ['-e', `PGPORT=${this.port(role)}`]),
+      this.imageFor(role),
+      ...(isSupabaseImage(this.imageFor(role)) ? ['postgres', '-D', '/etc/postgresql', '-c', `port=${this.port(role)}`] : []),
       // Test databases are disposable — trade durability for speed.
-      this.imageFor(role), '-c', 'fsync=off', '-c', 'full_page_writes=off',
+      '-c', 'fsync=off', '-c', 'full_page_writes=off',
       // Host networking skips the host firewall's DOCKER-USER rules: loopback only.
       '-c', 'listen_addresses=127.0.0.1',
     ]);
@@ -400,4 +408,9 @@ export class PgHarness {
       p.stdin.end();
     });
   }
+}
+
+/** Supabase's Postgres image, which starts differently from the official one. */
+function isSupabaseImage(image: string): boolean {
+  return /(^|\/)supabase\/postgres:/.test(image)
 }

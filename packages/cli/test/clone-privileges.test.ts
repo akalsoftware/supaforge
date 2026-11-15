@@ -19,6 +19,21 @@ describe('privilegeEntries', () => {
       '2052; 826 16400 DEFAULT ACL public DEFAULT PRIVILEGES FOR TABLES postgres',
     ])
   })
+  it('drops the entries on a schema the clone leaves out, and the schema\'s own', () => {
+    const listing = [
+      '3370; 0 0 ACL - SCHEMA public pg_database_owner',
+      '3380; 0 0 ACL - SCHEMA net supabase_admin',
+      '3381; 0 0 ACL extensions FUNCTION algorithm_sign(signables text, secret text, algorithm text) supabase_admin',
+      '3382; 0 0 ACL public TABLE film postgres',
+      '2053; 826 16401 DEFAULT ACL extensions DEFAULT PRIVILEGES FOR FUNCTIONS postgres',
+      '3383; 0 0 ACL - DATABASE postgres postgres',
+    ].join('\n')
+    expect(privilegeEntries(listing, ['net', 'extensions'])).toEqual([
+      '3370; 0 0 ACL - SCHEMA public pg_database_owner',
+      '3382; 0 0 ACL public TABLE film postgres',
+      '3383; 0 0 ACL - DATABASE postgres postgres',
+    ])
+  })
 })
 
 describe('privilegeStatements', () => {
