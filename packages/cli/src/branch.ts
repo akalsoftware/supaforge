@@ -9,6 +9,7 @@ import { BRANCHES_FILE, PG_PIPELINE_TIMEOUT_MS, CLONE_PROGRESS_INTERVAL_MS } fro
 import { CLONE_STUBS_SQL } from './stubs'
 import { quoteIdent, quoteName } from './utils/sql'
 import { SUPABASE_PLATFORM_SCHEMAS } from './defaults'
+import { restorePrivileges, type NotGranted } from './clone-privileges.js'
 
 /** Prefix for branch database names created by SupaForge. */
 export const BRANCH_DB_PREFIX = 'supaforge_branch_'
@@ -243,14 +244,15 @@ async function tryDumpRestore(
     await client.end()
   }
 
-  const dumpArgs = ['--format=custom', '--no-owner', '--no-acl', sourceUrl]
+  // Privileges are kept: this is the same server, so every role they name is
+  // here, as they are in a template copy.
+  const dumpArgs = ['--format=custom', '--no-owner', sourceUrl]
   if (schemaOnly) dumpArgs.unshift('--schema-only')
 
   const targetUrl = replaceDbName(sourceUrl, newDb)
   const restoreArgs = [
     '--format=custom',
     '--no-owner',
-    '--no-acl',
     `--dbname=${targetUrl}`,
   ]
 
@@ -652,10 +654,21 @@ export async function cloneRemoteToLocal(opts: CloneRemoteOptions): Promise<Clon
   }
 
   const { failures, unavailable } = restoreFailures(restoreLog)
+  const privileges = await restorePrivileges({
+    pgDumpPath: compat.pgDumpPath,
+    pgRestorePath: compat.pgRestorePath,
+    remoteUrl: opts.remoteUrl,
+    localDbUrl,
+    excludeSchemas: opts.excludeSchemas,
+  }).catch((err: Error) => ({
+    granted: 0, notGranted: [],
+    failures: [{ object: 'the source\'s privileges', error: err.message.split('\n')[0] }],
+  }))
   return {
     url: localDbUrl,
-    failures,
+    failures: [...failures, ...privileges.failures],
     unavailable,
+    notGranted: privileges.notGranted,
     extensionsInstalled: extensions.installed,
   }
 }
@@ -678,6 +691,12 @@ export interface CloneResult {
   unavailable: RestoreFailure[]
   /** Extensions installed locally ahead of the restore — see installRemoteExtensions. */
   extensionsInstalled: string[]
+  /**
+   * The source's privileges for roles this server does not have, so not
+   * granted: Supabase's `anon` and `authenticated` on plain PostgreSQL, say.
+   * Every other privilege is in the clone — see restorePrivileges.
+   */
+  notGranted: NotGranted[]
 }
 
 export interface RestoreFailure {

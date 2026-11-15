@@ -15,6 +15,7 @@ import {
   addBranchToManifest,
 } from '../branch.js'
 import type { BranchMeta, CloneResult, RestoreFailure } from '../branch.js'
+import type { NotGranted } from '../clone-privileges.js'
 import { loadConfig } from '../config.js'
 import { checkPgDumpCompat } from '../pg-tools.js'
 import { startLocalPg, DEFAULT_LOCAL_PORT, LOCAL_PG_USER, LOCAL_PG_PASSWORD } from '../local-pg.js'
@@ -296,6 +297,7 @@ export default class Clone extends BaseCommand {
         this.log(`      ${dim(`Installed first, in the schema the source keeps them in: ${cloned.extensionsInstalled.join(', ')}`)}`)
       }
       for (const line of formatUnavailable(cloned.unavailable)) this.log(line)
+      for (const line of formatNotGranted(cloned.notGranted)) this.log(line)
       for (const line of formatRestoreFailures(cloned.failures)) this.log(line)
     } catch (err) {
       progressOut.write('\n')
@@ -363,7 +365,7 @@ export default class Clone extends BaseCommand {
     if (flags.json) {
       this.json({
         snapshot: snapshot.manifest, config: newConfig,
-        restoreFailures: cloned.failures, unavailable: cloned.unavailable,
+        restoreFailures: cloned.failures, unavailable: cloned.unavailable, notGranted: cloned.notGranted,
       })
       if (missing > 0) this.exit(1)
       return
@@ -432,6 +434,19 @@ export function formatUnavailable(items: readonly RestoreFailure[]): string[] {
     ...(others ? [`${others} event trigger(s) of the platform's`] : []),
   ]
   return [`      ${dim(`Not available on this server, as expected for a Supabase project: ${parts.join('; ')}`)}`]
+}
+
+/**
+ * The source's privileges this server has no role for, by role: a clone of a
+ * Supabase project onto plain PostgreSQL has no `anon`, so none of its grants.
+ * Everything else the source grants is in the clone.
+ */
+export function formatNotGranted(items: readonly NotGranted[]): string[] {
+  if (items.length === 0) return []
+  const byRole = new Map<string, number>()
+  for (const { role } of items) byRole.set(role, (byRole.get(role) ?? 0) + 1)
+  const roles = [...byRole].map(([role, n]) => `${role} (${n})`).join(', ')
+  return [`      ${dim(`Privileges not granted, as these roles are not on this server: ${roles}`)}`]
 }
 
 /** Shown at most, before "…and N more". */
