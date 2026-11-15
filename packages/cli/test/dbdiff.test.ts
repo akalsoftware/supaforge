@@ -1651,7 +1651,8 @@ describe('an extension Supabase keeps in a schema of its own', () => {
 
 describe('calls to a platform extension left where Supabase installs it', () => {
   const moves = [{ name: 'uuid-ossp', sourceSchema: 'public', targetSchema: 'extensions' }]
-  const owned = new Map([['uuid-ossp', new Set(['uuid_generate_v1', 'uuid_generate_v4'])]])
+  const fn = (name: string, minArgs = 0, maxArgs = minArgs) => ({ name, minArgs, maxArgs })
+  const owned = new Map([['uuid-ossp', [fn('uuid_generate_v1'), fn('uuid_generate_v4'), fn('uuid_generate_v5', 2)]]])
   const issue = (up: string, down = 'DROP TABLE "public"."t";'): DriftIssue => ({
     id: 'schema-create_table-1', check: 'schema', severity: 'warning',
     title: 'Table missing: public.t', description: 'Table exists in source but not in target.', sql: { up, down },
@@ -1679,6 +1680,28 @@ describe('calls to a platform extension left where Supabase installs it', () => 
   it('are left alone when not the extension\'s, or not in the source\'s schema', () => {
     const up = 'CREATE TABLE public.t (a uuid DEFAULT public.my_uuid(), b uuid DEFAULT other.uuid_generate_v1(), c uuid DEFAULT gen_random_uuid());'
     const [out] = withPlatformExtensionCalls([issue(up)], moves, owned)
+    expect(out.sql!.up).toBe(up)
+  })
+
+  it('are left alone when no function of the extension takes that many arguments', () => {
+    const up = 'CREATE TABLE public.t (a uuid DEFAULT public.uuid_generate_v4(\'seed\'), b uuid DEFAULT public.uuid_generate_v5(public.uuid_generate_v1(), \'x\'));'
+    const [out] = withPlatformExtensionCalls([issue(up)], moves, owned)
+    expect(out.sql!.up).toBe('CREATE TABLE public.t (a uuid DEFAULT public.uuid_generate_v4(\'seed\'), b uuid DEFAULT extensions.uuid_generate_v5(extensions.uuid_generate_v1(), \'x\'));')
+  })
+
+  it('leave the user\'s own overload where it is, and the calls to it', () => {
+    const overload = issue(
+      "CREATE FUNCTION public.uuid_generate_v5(a text, b text) RETURNS uuid LANGUAGE sql AS $$ SELECT md5(a || b)::uuid $$;",
+      'DROP FUNCTION public.uuid_generate_v5(a text, b text);')
+    const caller = issue("CREATE TABLE public.t (a uuid DEFAULT public.uuid_generate_v5('x', 'y'), b uuid DEFAULT public.uuid_generate_v4());")
+    const [o, c] = withPlatformExtensionCalls([overload, caller], moves, owned)
+    expect(o.sql).toEqual(overload.sql)
+    expect(c.sql!.up).toBe("CREATE TABLE public.t (a uuid DEFAULT public.uuid_generate_v5('x', 'y'), b uuid DEFAULT extensions.uuid_generate_v4());")
+  })
+
+  it('leave a call alone that a function of the user\'s on the target could mean', () => {
+    const up = "CREATE TABLE public.t (a uuid DEFAULT public.uuid_generate_v5('x', 'y'));"
+    const [out] = withPlatformExtensionCalls([issue(up)], moves, owned, [{ schema: 'public', ...fn('uuid_generate_v5', 2) }])
     expect(out.sql!.up).toBe(up)
   })
 

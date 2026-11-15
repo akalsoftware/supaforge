@@ -3,7 +3,7 @@ import { pgQuery } from '../db'
 import type { DriftIssue } from '../types/drift'
 import {
   runDbDiff, schemaNotices, sqlToIssues, withoutAbsentRoles, platformExtensionMoves, withPlatformExtensionCalls,
-  type DbDiffOptions, type PlatformExtensionMove,
+  type DbDiffOptions, type PlatformExtensionMove, type FunctionArity, type SchemaFunction,
 } from '../dbdiff'
 import { Check, CheckSkipped, type CheckContext } from './base'
 import { DEFAULT_IGNORE_SCHEMAS } from '../defaults'
@@ -54,7 +54,8 @@ export class SchemaCheck extends Check {
       let issues = sqlToIssues(result, 'schema', ignoreSchemas, ignoredSchemaTables)
       const moves = platformExtensionMoves(issues)
       if (moves.length) {
-        issues = withPlatformExtensionCalls(issues, moves, await this.extensionFunctions(ctx.target.dbUrl, moves))
+        const { owned, shadows } = await this.extensionFunctions(ctx.target.dbUrl, moves)
+        issues = withPlatformExtensionCalls(issues, moves, owned, shadows)
       }
       const roles = await this.targetRoles(ctx.target.dbUrl)
       return roles?.size ? withoutAbsentRoles(issues, roles) : issues
@@ -77,24 +78,38 @@ export class SchemaCheck extends Check {
    * DB error here never blocks the main schema diff.
    */
   /**
-   * The functions each extension owns on the target, by name. Unreadable,
-   * none: the calls are then left as the source wrote them.
+   * The functions each extension owns on the target, with how many arguments
+   * each takes, and the user's own functions of the same names in the schemas
+   * the source keeps those extensions in, which a call could mean instead.
+   * Unreadable, none: the calls are then left as the source wrote them.
    */
-  private async extensionFunctions(dbUrl: string, moves: PlatformExtensionMove[]): Promise<Map<string, Set<string>>> {
-    const owned = new Map<string, Set<string>>()
+  private async extensionFunctions(dbUrl: string, moves: PlatformExtensionMove[]): Promise<{
+    owned: Map<string, FunctionArity[]>
+    shadows: SchemaFunction[]
+  }> {
+    const owned = new Map<string, FunctionArity[]>()
+    const shadows: SchemaFunction[] = []
     try {
-      const rows = await this.queryFn(dbUrl, `SELECT e.extname, p.proname
+      const rows = await this.queryFn(dbUrl, `SELECT e.extname, p.proname, p.pronargs, p.pronargdefaults, p.provariadic <> 0 AS variadic
         FROM pg_depend d
         JOIN pg_extension e ON e.oid = d.refobjid
         JOIN pg_proc p ON p.oid = d.objid
         WHERE d.classid = 'pg_proc'::regclass AND d.refclassid = 'pg_extension'::regclass
-          AND d.deptype = 'e' AND e.extname = ANY($1)`, [moves.map(m => m.name)]) as Array<{ extname: string; proname: string }>
-      for (const { extname, proname } of rows) {
-        if (!owned.has(extname)) owned.set(extname, new Set())
-        owned.get(extname)!.add(proname)
+          AND d.deptype = 'e' AND e.extname = ANY($1)`, [moves.map(m => m.name)])
+      for (const row of rows) {
+        const extname = String(row.extname)
+        if (!owned.has(extname)) owned.set(extname, [])
+        owned.get(extname)!.push(arity(row))
       }
+      const names = [...new Set(rows.map(r => String(r.proname)))]
+      const others = await this.queryFn(dbUrl, `SELECT n.nspname, p.proname, p.pronargs, p.pronargdefaults, p.provariadic <> 0 AS variadic
+        FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = ANY($1) AND p.proname = ANY($2)
+          AND NOT EXISTS (SELECT FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')`,
+      [[...new Set(moves.map(m => m.sourceSchema))], names])
+      for (const row of others) shadows.push({ schema: String(row.nspname), ...arity(row) })
     } catch { /* left as written */ }
-    return owned
+    return { owned, shadows }
   }
 
   /** The target's roles, or undefined when they cannot be read. */
@@ -126,5 +141,15 @@ export class SchemaCheck extends Check {
       // Non-fatal: return empty set and let the existing filter handle what it can
       return new Set()
     }
+  }
+}
+
+/** How many arguments a catalog row's function takes. */
+function arity(row: Record<string, unknown>): FunctionArity {
+  const nargs = Number(row.pronargs ?? 0)
+  return {
+    name: String(row.proname),
+    minArgs: nargs - Number(row.pronargdefaults ?? 0),
+    maxArgs: row.variadic === true ? Infinity : nargs,
   }
 }

@@ -840,6 +840,44 @@ export function platformExtensionMoves(issues: DriftIssue[]): PlatformExtensionM
 
 const quoteIdent = (name: string) => /^[a-z_][a-z0-9_$]*$/.test(name) ? name : `"${name.replace(/"/g, '""')}"`
 
+/** A function, by name and how many arguments a call to it can pass. */
+export interface FunctionArity {
+  name: string
+  minArgs: number
+  /** `Infinity` for a variadic function. */
+  maxArgs: number
+}
+
+/** A function in a schema that is not an extension's: one a call could mean instead. */
+export interface SchemaFunction extends FunctionArity {
+  schema: string
+}
+
+const accepts = (fn: FunctionArity, args: number) => args >= fn.minArgs && args <= fn.maxArgs
+
+/**
+ * How many arguments the parenthesised list at `open` passes. Brackets and
+ * commas are read from the code mask, where strings and bodies are blanked so
+ * theirs do not count; whether the list is empty, from the SQL itself, where
+ * a string is still an argument.
+ */
+function argumentCount(sql: string, mask: string, open: number): number | undefined {
+  let depth = 0
+  let commas = 0
+  let empty = true
+  for (let i = open; i < mask.length; i++) {
+    const c = mask[i]
+    if (c === '(' || c === '[') { depth++; if (depth > 1) empty = false; continue }
+    if (c === ')' || c === ']') { if (--depth === 0) return empty ? 0 : commas + 1; continue }
+    if (depth === 1 && c === ',') commas++
+    if (depth >= 1 && !/\s/.test(sql[i])) empty = false
+  }
+  return undefined
+}
+
+/** CREATE FUNCTION and its like, just before a name: that name is being defined, not called. */
+const DEFINES = /\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:FUNCTION|PROCEDURE|AGGREGATE)\s*$/i
+
 /**
  * Calls to a platform extension's functions, made through the schema the
  * source keeps the extension in, written through the target's instead.
@@ -852,18 +890,37 @@ const quoteIdent = (name: string) => /^[a-z_][a-z0-9_$]*$/.test(name) ? name : `
  * in UP and DOWN, and the finding says so.
  *
  * Only code is rewritten: a routine's body, a string and a comment are left
- * as they were. `functions` are the names each extension owns on the target.
+ * as they were. `functions` are the functions each extension owns on the
+ * target. A call is the extension's only if one of them takes that many
+ * arguments and no other function of that name could: one of the user's own,
+ * on the target (`shadows`) or created by these fixes. A user's overload of
+ * the same name, `public.uuid_generate_v4(text)`, stays in `public`, and so
+ * do the calls to it.
  */
 export function withPlatformExtensionCalls(
   issues: DriftIssue[],
   moves: PlatformExtensionMove[],
-  functions: Map<string, ReadonlySet<string>>,
+  functions: Map<string, ReadonlyArray<FunctionArity>>,
+  shadows: ReadonlyArray<SchemaFunction> = [],
 ): DriftIssue[] {
-  const rules = moves.flatMap(move => [...(functions.get(move.name) ?? [])].map(fn => ({ move, fn })))
+  const rules = moves.flatMap(move => (functions.get(move.name) ?? []).map(fn => ({ move, fn })))
   if (!rules.length) return issues
   const nameRe = String.raw`("(?:[^"]|"")+"|[\w$]+)`
   const call = new RegExp(String.raw`${nameRe}(\s*\.\s*)${nameRe}(?=\s*\()`, 'g')
   const unq = (part: string) => part.startsWith('"') ? part.slice(1, -1).replace(/""/g, '"') : part.toLowerCase()
+
+  // The user's functions these fixes create, by the same scan.
+  const defined: SchemaFunction[] = [...shadows]
+  for (const issue of issues) {
+    for (const sql of issue.sql ? [issue.sql.up, issue.sql.down] : []) {
+      const mask = codeMask(sql)
+      for (const m of mask.matchAll(call)) {
+        if (!DEFINES.test(mask.slice(0, m.index))) continue
+        const args = argumentCount(sql, mask, mask.indexOf('(', m.index + m[0].length))
+        if (args !== undefined) defined.push({ schema: unq(m[1]), name: unq(m[3]), minArgs: args, maxArgs: args })
+      }
+    }
+  }
 
   const rewrite = (sql: string, seen: Set<string>): string => {
     const mask = codeMask(sql)
@@ -872,8 +929,12 @@ export function withPlatformExtensionCalls(
     for (const m of mask.matchAll(call)) {
       const schema = unq(m[1])
       const fn = unq(m[3])
-      const rule = rules.find(r => r.move.sourceSchema === schema && r.fn === fn)
+      if (DEFINES.test(mask.slice(0, m.index))) continue
+      const args = argumentCount(sql, mask, mask.indexOf('(', m.index + m[0].length))
+      if (args === undefined) continue
+      const rule = rules.find(r => r.move.sourceSchema === schema && r.fn.name === fn && accepts(r.fn, args))
       if (!rule) continue
+      if (defined.some(d => d.schema === schema && d.name === fn && accepts(d, args))) continue
       out += sql.slice(at, m.index) + quoteIdent(rule.move.targetSchema) + m[2] + sql.slice(m.index + m[1].length + m[2].length, m.index + m[0].length)
       at = m.index + m[0].length
       seen.add(`${quoteIdent(schema)}.${quoteIdent(fn)}() → ${quoteIdent(rule.move.targetSchema)}.${quoteIdent(fn)}()`)
