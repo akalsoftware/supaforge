@@ -1,4 +1,1 @@
-{
-  "adventureworks pg17>pg18 drift": "--prove refuses the drift: on PostgreSQL 18 a renamed table keeps NOT NULL constraint names from its old name, while the proof's fresh copy of the PostgreSQL 17 source names them after the new one",
-  "adventureworks pg17>pg18 drift-prove": "as drift"
-}
+{}
