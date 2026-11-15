@@ -29,10 +29,22 @@ export interface PrivilegesResult {
  * The privilege entries of a `pg_restore -l` listing: `ACL` (GRANT and REVOKE
  * on an object) and `DEFAULT ACL` (ALTER DEFAULT PRIVILEGES).
  *
- * A listing line is `<dumpId>; <tableoid> <oid> <desc> <schema> <name> <owner>`.
+ * A listing line is `<dumpId>; <tableoid> <oid> <desc> <schema> <name> <owner>`;
+ * a schema's own entry has `-` for its schema and `SCHEMA <name>` after it.
+ *
+ * Entries on a schema the clone leaves out are dropped, along with the schema's
+ * own: pg_dump still lists some of them (an extension's members, the schema an
+ * extension creates), and they can only fail, as nothing they name is here.
  */
-export function privilegeEntries(listing: string): string[] {
-  return listing.split('\n').filter(line => /^\d+;\s+\d+\s+\d+\s+(?:DEFAULT\s+)?ACL\s/.test(line))
+export function privilegeEntries(listing: string, excludeSchemas: readonly string[] = []): string[] {
+  const excluded = new Set(excludeSchemas)
+  return listing.split('\n').filter(line => {
+    const m = /^\d+;\s+\d+\s+\d+\s+(?:DEFAULT\s+)?ACL\s+(\S+)\s+(.*)$/.exec(line)
+    if (!m) return false
+    const [, schema, rest] = m
+    const subject = schema === '-' ? /^SCHEMA\s+(\S+)/.exec(rest)?.[1] : schema
+    return subject === undefined || !excluded.has(subject)
+  })
 }
 
 /**
@@ -114,7 +126,7 @@ export async function restorePrivileges(opts: {
       '--file', archive, opts.remoteUrl,
     ], { maxBuffer: 64 * 1024 * 1024 })
     const { stdout: listing } = await run(opts.pgRestorePath, ['--list', archive], { maxBuffer: 256 * 1024 * 1024 })
-    const entries = privilegeEntries(listing)
+    const entries = privilegeEntries(listing, opts.excludeSchemas)
     if (entries.length === 0) return { granted: 0, notGranted: [], failures: [] }
     await writeFile(list, entries.join('\n') + '\n')
     const { stdout: sql } = await run(opts.pgRestorePath, ['--use-list', list, '--file', '-', archive], { maxBuffer: 256 * 1024 * 1024 })
