@@ -201,6 +201,8 @@ export class PgHarness {
       '-e', `PGPORT=${this.port(role)}`,
       // Test databases are disposable — trade durability for speed.
       this.imageFor(role), '-c', 'fsync=off', '-c', 'full_page_writes=off',
+      // Host networking skips the host firewall's DOCKER-USER rules: loopback only.
+      '-c', 'listen_addresses=127.0.0.1',
     ]);
   }
 
