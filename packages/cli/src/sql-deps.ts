@@ -434,7 +434,7 @@ export function referencedTables(sql: string): string[] {
 // ─── Ordering ────────────────────────────────────────────────────────────────
 
 /** One statement, with everything the sort needs precomputed. */
-interface Node {
+export interface Node {
   /** The fix's position in the order its producer wrote it, when that order is to be kept. */
   rank?: number
   phase: number
@@ -491,46 +491,132 @@ function withoutDropStatements(sql: string): string {
 }
 
 /**
- * Pick the next statement to run: the one whose dependencies are all satisfied,
+ * The order to run statements in: each once its dependencies have run,
  * earliest by phase, then by the order the diff reported it.
  *
- * Falls back to the lowest remaining index when nothing is ready, which happens
- * only if the edges form a cycle — mutually referencing tables, or a name that
- * reads like two different objects. Emitting those in their original order is
- * no worse than the behaviour this replaces.
+ * Nodes with a rank are one sequence, DBDiff's, kept in its order. A node
+ * from another check goes ahead of that sequence only when it belongs before
+ * everything the sequence still has to make: the earliest phase left in it,
+ * not the phase of the node at its head. Compared with the head alone, an RLS
+ * policy jumped ahead of a column change it needed whenever a late-phase fix
+ * happened to come first: "operator does not exist: text = uuid". A drop
+ * provides nothing another node could need, so drops do not count: counted,
+ * a DROP INDEX DBDiff sequences after its tables held CREATE EXTENSION back
+ * until after the table whose exclusion constraint needs it.
+ *
+ * When nothing is ready, the edges form a cycle — mutually referencing
+ * tables, or a name that reads like two different objects — and the lowest
+ * remaining index runs next, which is no worse than the order reported.
+ *
+ * Each step takes the head of a heap rather than scanning what remains, so a
+ * fix set of hundreds of thousands of rows orders in moments: scanning made
+ * it quadratic, about ten seconds at 20,000 statements and an hour at 400,000.
  */
-function nextReady(remaining: number[], nodes: Node[], done: Set<number>): number {
-  const ready = remaining.filter(i => isSatisfied(nodes[i].after, done))
-  const first = (from: number[], key: (n: Node) => number) =>
-    from.reduce<number | undefined>((best, i) => best === undefined || key(nodes[i]) < key(nodes[best]) ? i : best, undefined)
-
-  const head = first(ready.filter(i => nodes[i].rank !== undefined), n => n.rank as number)
-  const free = first(ready.filter(i => nodes[i].rank === undefined), n => n.phase)
-  if (head === undefined || free === undefined) return head ?? free ?? remaining[0]
-
-  // DBDiff's fixes are one sequence, in DBDiff's order. Another check's fix
-  // goes ahead of it only when it belongs before everything the sequence
-  // still has to do — the earliest phase left in it, not the phase of the
-  // fix at its head. Compared with the head alone, an RLS policy jumped ahead
-  // of a column change it needed whenever a late-phase fix happened to come
-  // first: "operator does not exist: text = uuid".
-  //
-  // What it has left to make, that is: a drop provides nothing another fix
-  // could need. Counted, a DROP INDEX DBDiff sequences after its tables held
-  // CREATE EXTENSION back until after the table whose exclusion constraint
-  // needs it.
-  const sequence = Math.min(...remaining
-    .filter(i => nodes[i].rank !== undefined && !DROP_PHASES.has(nodes[i].phase))
-    .map(i => nodes[i].phase))
-  return nodes[free].phase < sequence ? free : head
-}
-/** Have all of `after` already run? Iterated rather than spread — this is the
- * inner loop of the sort, and a large fix set runs it thousands of times. */
-function isSatisfied(after: Set<number>, done: Set<number>): boolean {
-  for (const dep of after) {
-    if (!done.has(dep)) return false
+export function orderNodes(nodes: ReadonlyArray<Readonly<Node>>): number[] {
+  const n = nodes.length
+  const waiting = new Array<number>(n)
+  const dependents: number[][] = Array.from({ length: n }, () => [])
+  for (let i = 0; i < n; i++) {
+    waiting[i] = nodes[i].after.size
+    for (const dep of nodes[i].after) dependents[dep].push(i)
   }
-  return true
+
+  // DBDiff's sequence by rank, other fixes by phase; ties to the lower index.
+  const ranked = new MinHeap((a, b) => (nodes[a].rank as number) - (nodes[b].rank as number) || a - b)
+  const free = new MinHeap((a, b) => nodes[a].phase - nodes[b].phase || a - b)
+  const enqueue = (i: number) => (nodes[i].rank !== undefined ? ranked : free).push(i)
+
+  // How many nodes of each phase the sequence has left to make.
+  const sequenceLeft = new Map<number, number>()
+  for (const node of nodes) {
+    if (node.rank !== undefined && !DROP_PHASES.has(node.phase)) {
+      sequenceLeft.set(node.phase, (sequenceLeft.get(node.phase) ?? 0) + 1)
+    }
+  }
+  const earliestInSequence = () => {
+    let min = Infinity
+    for (const [phase, count] of sequenceLeft) if (count > 0 && phase < min) min = phase
+    return min
+  }
+
+  const done = new Array<boolean>(n).fill(false)
+  for (let i = 0; i < n; i++) if (waiting[i] === 0) enqueue(i)
+  let lowest = 0
+  const order: number[] = []
+
+  const peek = (heap: MinHeap) => {
+    while (heap.size > 0 && done[heap.peek()]) heap.pop()
+    return heap.size > 0 ? heap.peek() : undefined
+  }
+
+  while (order.length < n) {
+    const head = peek(ranked)
+    const other = peek(free)
+    let next: number
+    if (head === undefined || other === undefined) {
+      if (head !== undefined || other !== undefined) {
+        next = (head ?? other) as number
+      } else {
+        while (done[lowest]) lowest++
+        next = lowest
+      }
+    } else {
+      next = nodes[other].phase < earliestInSequence() ? other : head
+    }
+
+    done[next] = true
+    order.push(next)
+    const node = nodes[next]
+    if (node.rank !== undefined && !DROP_PHASES.has(node.phase)) {
+      sequenceLeft.set(node.phase, (sequenceLeft.get(node.phase) as number) - 1)
+    }
+    for (const d of dependents[next]) {
+      if (--waiting[d] === 0 && !done[d]) enqueue(d)
+    }
+  }
+  return order
+}
+
+/** A binary min-heap of indices under `less`. */
+class MinHeap {
+  private readonly items: number[] = []
+  constructor(private readonly compare: (a: number, b: number) => number) {}
+
+  get size(): number { return this.items.length }
+  peek(): number { return this.items[0] }
+
+  push(item: number): void {
+    const items = this.items
+    items.push(item)
+    let i = items.length - 1
+    while (i > 0) {
+      const parent = (i - 1) >> 1
+      if (this.compare(items[i], items[parent]) >= 0) break
+      ;[items[i], items[parent]] = [items[parent], items[i]]
+      i = parent
+    }
+  }
+
+  pop(): number {
+    const items = this.items
+    const top = items[0]
+    const last = items.pop() as number
+    if (items.length > 0) {
+      items[0] = last
+      let i = 0
+      for (;;) {
+        const l = 2 * i + 1
+        const r = l + 1
+        let m = i
+        if (l < items.length && this.compare(items[l], items[m]) < 0) m = l
+        if (r < items.length && this.compare(items[r], items[m]) < 0) m = r
+        if (m === i) break
+        ;[items[i], items[m]] = [items[m], items[i]]
+        i = m
+      }
+    }
+    return top
+  }
 }
 
 /**
@@ -553,18 +639,7 @@ export function orderStatements<T>(
 
   linkDependencies(nodes, texts, provides)
 
-  const done = new Set<number>()
-  let remaining = texts.map((_, i) => i)
-  const ordered: T[] = []
-
-  while (remaining.length > 0) {
-    const next = nextReady(remaining, nodes, done)
-    ordered.push(items[next])
-    done.add(next)
-    remaining = remaining.filter(i => i !== next)
-  }
-
-  return ordered
+  return orderNodes(nodes).map(i => items[i])
 }
 
 // ─── Statement subject ───────────────────────────────────────────────────────
