@@ -7,7 +7,7 @@
  * Used by `supaforge report` to show recent command history.
  * Entries older than RUN_LOG_MAX_ENTRIES are pruned automatically on append.
  */
-import { readFile, writeFile, mkdir, appendFile } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, appendFile, chmod } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { redactUrls } from './utils/error.js'
@@ -52,10 +52,12 @@ export function runLogDir(): string {
 /** Append a single run entry to the log. Prunes old entries if needed. */
 export async function appendRunLog(entry: RunLogEntry): Promise<void> {
   const dir = runLogDir()
-  await mkdir(dir, { recursive: true })
+  // Commands, hosts and errors: readable by this user only.
+  await mkdir(dir, { recursive: true, mode: 0o700 })
   const path = runLogPath()
   const line = JSON.stringify(entry) + '\n'
-  await appendFile(path, line, 'utf8')
+  await appendFile(path, line, { encoding: 'utf8', mode: 0o600 })
+  await chmod(path, 0o600).catch(() => {})
   // Prune asynchronously — don't block command output
   pruneRunLog(path).catch(() => {})
 }
@@ -84,7 +86,7 @@ async function pruneRunLog(path: string): Promise<void> {
     const lines = raw.split('\n').filter(Boolean)
     if (lines.length <= RUN_LOG_MAX_ENTRIES) return
     const trimmed = lines.slice(lines.length - RUN_LOG_MAX_ENTRIES)
-    await writeFile(path, trimmed.join('\n') + '\n', 'utf8')
+    await writeFile(path, trimmed.join('\n') + '\n', { encoding: 'utf8', mode: 0o600 })
   } catch {
     // Non-fatal
   }

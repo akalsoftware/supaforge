@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { newPgClient } from './db.js'
 import { splitSqlStatements } from './utils/sql-split.js'
+import { pgToolConnection } from './utils/pg-env.js'
 
 const run = promisify(execFile)
 
@@ -108,11 +109,12 @@ export async function restorePrivileges(opts: {
   try {
     const archive = join(dir, 'schema.dump')
     const list = join(dir, 'acl.list')
+    const remote = pgToolConnection(opts.remoteUrl)
     await run(opts.pgDumpPath, [
       '--format=custom', '--schema-only', '--no-owner',
       ...(opts.excludeSchemas ?? []).map(s => `--exclude-schema=${s}`),
-      '--file', archive, opts.remoteUrl,
-    ], { maxBuffer: 64 * 1024 * 1024 })
+      '--file', archive, remote.url,
+    ], { maxBuffer: 64 * 1024 * 1024, env: remote.env })
     const { stdout: listing } = await run(opts.pgRestorePath, ['--list', archive], { maxBuffer: 256 * 1024 * 1024 })
     const entries = privilegeEntries(listing)
     if (entries.length === 0) return { granted: 0, notGranted: [], failures: [] }

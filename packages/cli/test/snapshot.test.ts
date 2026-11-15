@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtemp, rm, mkdir, writeFile, readFile } from 'node:fs/promises'
+import { mkdtemp, rm, mkdir, writeFile, readFile, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -292,6 +292,11 @@ describe('captureSnapshot: webhooks', () => {
     // `http_request()` with no arguments is what the hand-built statement
     // emitted, and it makes every write to the table fail.
     expect(sql).not.toMatch(/http_request\(\s*\)/)
+  })
+
+  it('is readable by this user only: a snapshot can hold table rows', async () => {
+    const { result } = await capture([])
+    expect((await stat(result.dir)).mode & 0o777).toBe(0o700)
   })
 
   it('does not re-emit Supabase\'s own http_request function', async () => {

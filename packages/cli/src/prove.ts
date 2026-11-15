@@ -36,6 +36,7 @@ import { quoteName } from './utils/sql.js'
 import { globToRegExp } from './utils/strings.js'
 import { join, dirname } from 'node:path'
 import { compareTables, sampleInto, sampleRows, snapshotTables, type DataProof } from './prove-data.js'
+import { pgToolConnection } from './utils/pg-env.js'
 
 const exec = promisify(execFile)
 
@@ -434,12 +435,13 @@ export async function copyStructure(
   // A proved schema only the source has is the migration's to create. Each
   // name quoted: pg_dump reads --schema as a pattern, folding `App Data` to
   // lower case, which matched nothing.
+  const from = pgToolConnection(fromUrl)
   const dumpArgs = [
-    fromUrl, '--schema-only', '--no-owner', '--no-privileges',
+    from.url, '--schema-only', '--no-owner', '--no-privileges',
     ...[...schemas.filter(s => present.has(s)), ...supporting].map(s => `--schema=${quoteName(s)}`),
   ]
   const { stdout: structure } = await exec(tools.pgDump, dumpArgs, {
-    maxBuffer: 256 * 1024 * 1024, timeout: 300_000,
+    maxBuffer: 256 * 1024 * 1024, timeout: 300_000, env: from.env,
   })
 
   // pg_dump writes its preamble for its own version, so a newer client can
@@ -567,8 +569,9 @@ export function runSql(psqlPath: string, dbUrl: string, sql: string): Promise<vo
     // Fed over stdin: promisified execFile has no `input` option, so passing
     // one silently leaves psql waiting on a stdin that never closes until the
     // timeout kills it.
-    const child = spawn(psqlPath, [dbUrl, '-v', 'ON_ERROR_STOP=1', '-q', '-f', '-'], {
-      stdio: ['pipe', 'pipe', 'pipe'],
+    const conn = pgToolConnection(dbUrl)
+    const child = spawn(psqlPath, [conn.url, '-v', 'ON_ERROR_STOP=1', '-q', '-f', '-'], {
+      stdio: ['pipe', 'pipe', 'pipe'], env: conn.env,
     })
     let stderr = ''
     child.stderr.on('data', (d: Buffer) => { stderr += d.toString() })
