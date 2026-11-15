@@ -117,6 +117,22 @@ export function withDatabase(dbUrl: string, database: string): string {
  * lives in one place that both projects depend on.
  */
 
+/**
+ * A fingerprint with PostgreSQL 18's NOT NULL constraints left out, for a
+ * source older than 18. Such a source has none: whether a column is NOT NULL
+ * is all it has, and the fingerprint still compares that on every column.
+ * Their names on the proof's side are made up by 18 when it creates a table,
+ * from that table's name — so a table the migration renames kept its old
+ * names, the source copied onto 18 got new ones, and a correct migration was
+ * refused. Only plain NOT NULLs are left out: one NOT VALID or NO INHERIT
+ * cannot have come from the source, and still shows.
+ */
+export function withoutNotNullConstraints(fingerprint: string): string {
+  return fingerprint.split('\n')
+    .filter(line => !/^con .+ NOT NULL (?:"(?:[^"]|"")+"|\S+) valid=t deferrable=f deferred=f$/.test(line))
+    .join('\n')
+}
+
 export async function fingerprint(dbUrl: string, schemas: string[]): Promise<string> {
   const rows = await pgQuery(dbUrl, fingerprintSql(schemas)) as unknown as
     Array<{ fingerprint: string | null }>
@@ -321,9 +337,10 @@ export async function proveConvergence(opts: {
       return notApplied?.length ? { ...withData, notApplied } : withData
     }
 
+    const comparable = sourceMajor < 18 ? withoutNotNullConstraints : (fp: string) => fp
     const [want, got] = await Promise.all([
-      fingerprint(opts.sourceUrl, schemas),
-      fingerprint(cloneUrl, schemas),
+      fingerprint(opts.sourceUrl, schemas).then(comparable),
+      fingerprint(cloneUrl, schemas).then(comparable),
     ])
 
     // The verdict stays with the fingerprint. It is the comparison already
@@ -344,7 +361,7 @@ export async function proveConvergence(opts: {
     if (roundTrip !== null) {
       sourceCopyCreated = true
       if (roundTrip.ok) {
-        const wantRoundTripped = await fingerprint(roundTripUrl, schemas)
+        const wantRoundTripped = comparable(await fingerprint(roundTripUrl, schemas))
         if (canonicalArrays(wantRoundTripped) === canonicalArrays(got)) return reported({ converged: true, residual: [], cloneName })
         const residual = await describeDifference(roundTripUrl, cloneUrl, schemas, wantRoundTripped, got)
         return reported(withinScope(residual, before && diffState(await schemaState(roundTripUrl, schemas), before), opts.checks, cloneName))
