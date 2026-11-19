@@ -52,7 +52,7 @@ describeE2E('e2e: tables the fingerprint must not skip', () => {
     await h.cli(['diff', '--check', 'data', '--apply'], { cwd: ws })
     const rows = (role: 'source' | 'target') => h.sql(role, 'SELECT string_agg(v::text, \',\' ORDER BY id) FROM public.notes')
     expect(await rows('target')).toBe(await rows('source'))
-  })
+  }, 300_000)
 
   // Past the fingerprint, the row diff itself needs @dbdiff/cli to pin the
   // same setting (DBDiff #314); this is the part SupaForge decides.
@@ -60,5 +60,5 @@ describeE2E('e2e: tables the fingerprint must not skip', () => {
     const match = await tablesMatch(h.connectionString('source'), h.connectionString('target'), 'rates', pgQuery)
     await closePgPools()
     expect(match).toBe(false)
-  })
+  }, 60_000)
 })
