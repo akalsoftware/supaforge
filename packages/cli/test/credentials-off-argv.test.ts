@@ -16,6 +16,7 @@ import { runSql } from '../src/prove.js'
 import { restorePrivileges } from '../src/clone-privileges.js'
 import { appendRunLog } from '../src/run-log.js'
 import { runDbDiff } from '../src/dbdiff.js'
+import { addBranchToManifest } from '../src/branch.js'
 
 const PASSWORD = 'Zq@x:9/k%2#Lm'
 const URL_WITH = `postgresql://app:${encodeURIComponent(PASSWORD)}@db.example:5432/main?sslmode=require`
@@ -128,5 +129,21 @@ describe('the DBDiff SupaForge runs', () => {
     await dbdiff('old-dbdiff', true)
     await runDbDiff({ sourceUrl: URL_WITH, targetUrl: URL_WITH, type: 'data', include: 'both' })
     expect(await readFile(join(dir, 'old-dbdiff.args'), 'utf8')).toContain(`--server1-url=${URL_WITH}`)
+  })
+})
+
+describe('the clone registry', () => {
+  it('is readable by its own user only: each clone\'s URL carries its password', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'supaforge-branches-'))
+    try {
+      await addBranchToManifest({
+        name: 'c', dbName: 'c', dbUrl: URL_WITH, createdFrom: 'prod',
+        createdAt: new Date(0).toISOString(), schemaOnly: false,
+      }, cwd)
+      expect((await stat(join(cwd, '.supaforge'))).mode & 0o777).toBe(0o700)
+      expect((await stat(join(cwd, '.supaforge', 'branches.json'))).mode & 0o777).toBe(0o600)
+    } finally {
+      await rm(cwd, { recursive: true, force: true })
+    }
   })
 })
