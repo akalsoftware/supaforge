@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { readFile, writeFile, mkdir } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, chmod } from 'node:fs/promises'
 import { resolve, dirname } from 'node:path'
 import { pgQuery, type QueryFn, newPgClient } from './db.js'
 import { captureSnapshot, type SnapshotResult } from './snapshot'
@@ -133,8 +133,10 @@ export async function loadManifest(cwd = process.cwd()): Promise<BranchesManifes
 
 async function saveManifest(manifest: BranchesManifest, cwd: string): Promise<void> {
   const p = await manifestPath(cwd)
-  await mkdir(dirname(p), { recursive: true })
-  await writeFile(p, JSON.stringify(manifest, null, 2) + '\n')
+  // Each branch's URL carries its password: readable by this user only.
+  await mkdir(dirname(p), { recursive: true, mode: 0o700 })
+  await writeFile(p, JSON.stringify(manifest, null, 2) + '\n', { mode: 0o600 })
+  await chmod(p, 0o600)
 }
 
 // ─── Branch Operations ───────────────────────────────────────────────────────
