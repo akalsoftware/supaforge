@@ -15,6 +15,7 @@ import { pgToolConnection } from '../src/utils/pg-env.js'
 import { runSql } from '../src/prove.js'
 import { restorePrivileges } from '../src/clone-privileges.js'
 import { appendRunLog } from '../src/run-log.js'
+import { runDbDiff } from '../src/dbdiff.js'
 
 const PASSWORD = 'Zq@x:9/k%2#Lm'
 const URL_WITH = `postgresql://app:${encodeURIComponent(PASSWORD)}@db.example:5432/main?sslmode=require`
@@ -86,5 +87,46 @@ describe('the run log', () => {
     await appendRunLog({ timestamp: new Date().toISOString(), command: 'diff', args: [], durationMs: 1, exitStatus: 'success' })
     expect((await stat(join(home, '.supaforge'))).mode & 0o777).toBe(0o700)
     expect((await stat(join(home, '.supaforge', 'run-log.jsonl'))).mode & 0o777).toBe(0o600)
+  })
+})
+
+// DBDiff reads its connection URLs from DBDIFF_SERVER1_URL / DBDIFF_SERVER2_URL
+// (3.0.0-rc.38+); one older asks for its servers, and is given the flags.
+describe('the DBDiff SupaForge runs', () => {
+  let dir: string
+  const saved = process.env.SUPAFORGE_DBDIFF_BIN
+  beforeAll(async () => { dir = await mkdtemp(join(tmpdir(), 'supaforge-dbdiff-argv-')) })
+  afterAll(async () => {
+    if (saved === undefined) delete process.env.SUPAFORGE_DBDIFF_BIN
+    else process.env.SUPAFORGE_DBDIFF_BIN = saved
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  const dbdiff = async (name: string, legacy: boolean) => {
+    const path = join(dir, name)
+    await writeFile(path, [
+      '#!/bin/sh',
+      `printf '%s\\n' "$@" >> "${dir}/${name}.args"`,
+      `printf '%s' "$DBDIFF_SERVER1_URL" > "${dir}/${name}.env"`,
+      ...(legacy ? ['case "$*" in *--server1-url=*) ;; *) echo "Missing input argument. Provide server1.db:server2.db" >&2; exit 1;; esac'] : []),
+      'for a in "$@"; do case $a in --output=*) : > "${a#--output=}";; esac; done',
+      'exit 0',
+    ].join('\n'))
+    await chmod(path, 0o755)
+    process.env.SUPAFORGE_DBDIFF_BIN = path
+    return path
+  }
+
+  it('passes the URLs in its environment, not its arguments', async () => {
+    await dbdiff('dbdiff', false)
+    await runDbDiff({ sourceUrl: URL_WITH, targetUrl: URL_WITH, type: 'data', include: 'both' })
+    expect(await readFile(join(dir, 'dbdiff.args'), 'utf8')).not.toContain(PASSWORD)
+    expect(await readFile(join(dir, 'dbdiff.env'), 'utf8')).toBe(URL_WITH)
+  })
+
+  it('gives one older than those variables the flags', async () => {
+    await dbdiff('old-dbdiff', true)
+    await runDbDiff({ sourceUrl: URL_WITH, targetUrl: URL_WITH, type: 'data', include: 'both' })
+    expect(await readFile(join(dir, 'old-dbdiff.args'), 'utf8')).toContain(`--server1-url=${URL_WITH}`)
   })
 })

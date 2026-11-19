@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import {
+  dbdiffUrlEnv,
   parseDbDiffOutput,
   sqlToIssues,
   foldCommentsIntoCreates,
@@ -117,11 +118,17 @@ describe('buildDbDiffArgs', () => {
   it('passes the core flags', () => {
     const args = buildDbDiffArgs(base, '/tmp/o.sql')
     expect(args[0]).toBe('diff')
-    expect(args).toContain('--server1-url=postgres://s')
-    expect(args).toContain('--server2-url=postgres://t')
+    expect(args.some(a => a.startsWith('--server'))).toBe(false)
     expect(args).toContain('--type=schema')
     expect(args).toContain('--nocomments')
     expect(args).toContain('--output=/tmp/o.sql')
+  })
+
+  it('passes the connection URLs in the environment, not the arguments', () => {
+    expect(dbdiffUrlEnv(base)).toEqual({ DBDIFF_SERVER1_URL: 'postgres://s', DBDIFF_SERVER2_URL: 'postgres://t' })
+    const legacy = { ...base, urlsOnCommandLine: true }
+    expect(dbdiffUrlEnv(legacy)).toEqual({})
+    expect(buildDbDiffArgs(legacy, '/tmp/o.sql')).toEqual(expect.arrayContaining(['--server1-url=postgres://s', '--server2-url=postgres://t']))
   })
 
   it('omits --memory-limit unless SUPAFORGE_DBDIFF_MEMORY is set', () => {

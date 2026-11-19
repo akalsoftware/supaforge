@@ -44,6 +44,13 @@ export interface DbDiffOptions {
    * that predates the flag — runDbDiff does so itself when one refuses it.
    */
   units?: boolean
+  /**
+   * Pass the connection URLs as --server1-url / --server2-url. Off by
+   * default: they go in DBDIFF_SERVER1_URL / DBDIFF_SERVER2_URL, which only
+   * this user can read. runDbDiff sets it for a dbdiff older than those
+   * variables (3.0.0-rc.38), which asks for its servers.
+   */
+  urlsOnCommandLine?: boolean
 }
 
 export interface DbDiffResult {
@@ -203,8 +210,9 @@ function snapshotArgs(sourceUrl: string, targetUrl: string): string[] {
 export function buildDbDiffArgs(options: DbDiffOptions, outputFile: string): string[] {
   const args = [
     'diff',
-    `--server1-url=${options.sourceUrl}`,
-    `--server2-url=${options.targetUrl}`,
+    // A process's arguments are readable by every user on the machine; its
+    // environment only by its own user. See dbdiffUrlEnv().
+    ...(options.urlsOnCommandLine ? [`--server1-url=${options.sourceUrl}`, `--server2-url=${options.targetUrl}`] : []),
     `--type=${options.type}`,
     // Was hardcoded to 'both', silently ignoring options.include. Every caller
     // passes 'both' (sqlToIssues pairs each UP statement with its DOWN
@@ -256,6 +264,12 @@ export function buildDbDiffArgs(options: DbDiffOptions, outputFile: string): str
   }
 
   return args
+}
+
+/** The connection URLs as dbdiff reads them from its environment (3.0.0-rc.38+). */
+export function dbdiffUrlEnv(options: DbDiffOptions): Record<string, string> {
+  if (options.urlsOnCommandLine) return {}
+  return { DBDIFF_SERVER1_URL: options.sourceUrl, DBDIFF_SERVER2_URL: options.targetUrl }
 }
 
 /**
@@ -312,7 +326,7 @@ export async function runDbDiff(options: DbDiffOptions): Promise<DbDiffResult> {
     const running = execFileAsync(command, args, {
       timeout: timeoutMs,
       maxBuffer: DBDIFF_MAX_BUFFER,
-      ...(Object.keys(pgTools).length ? { env: { ...process.env, ...pgTools } } : {}),
+      env: { ...process.env, ...pgTools, ...dbdiffUrlEnv(options) },
     })
 
     // Attach to the child's stdout for progress without changing how it is
@@ -342,6 +356,10 @@ export async function runDbDiff(options: DbDiffOptions): Promise<DbDiffResult> {
     // is read statement by statement instead.
     if (options.units !== false && /"--units" option does not exist/.test(`${combined} ${stdout}`)) {
       return runDbDiff({ ...options, units: false })
+    }
+    // One older than DBDIFF_SERVER1_URL / DBDIFF_SERVER2_URL asks for servers.
+    if (!options.urlsOnCommandLine && /Missing input argument/.test(`${combined} ${stdout}`)) {
+      return runDbDiff({ ...options, urlsOnCommandLine: true })
     }
 
     if (dbdiffNotInstalled(errObj.code, stderr)) {

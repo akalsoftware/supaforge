@@ -189,8 +189,37 @@ export class PgHarness {
     await Promise.all(roles.map((r) => this.waitReady(r)));
   }
 
+  /**
+   * Supabase's image is published to two registries, and either may refuse a
+   * pull for a while ("toomanyrequests: Data limit exceeded"). Each is tried
+   * in turn, a few times, and the role runs whichever one arrived.
+   */
+  private async pullSupabaseImage(role: Role): Promise<void> {
+    const image = this.imageFor(role);
+    if (!isSupabaseImage(image)) return;
+    if (await this.rt(['image', 'inspect', image]).then(() => true, () => false)) return;
+    const tag = image.slice(image.indexOf('supabase/postgres:'));
+    const mirrors = [image, ...['public.ecr.aws', 'docker.io'].map((r) => `${r}/${tag}`).filter((m) => m !== image)];
+    let last: unknown;
+    for (const mirror of mirrors) {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          await this.rt(['pull', '-q', mirror]);
+          this.images[role] = mirror;
+          return;
+        } catch (err) {
+          last = err;
+          this.log(`pull ${mirror} failed (attempt ${attempt})`);
+          await new Promise((r) => setTimeout(r, 10_000));
+        }
+      }
+    }
+    throw last;
+  }
+
   private async startOne(role: Role): Promise<void> {
     const name = this.name(role);
+    await this.pullSupabaseImage(role);
     await this.rt(['rm', '-f', '-v', name]).catch(() => undefined);
     this.log(`starting ${name} on :${this.port(role)} (${this.runtime})`);
     await this.rt([
