@@ -749,7 +749,7 @@ describe('CLI e2e: help', () => {
   it('answers `help` with the root help', async () => {
     const { stdout } = await run(['help'])
 
-    expect(stdout).toContain('Diff and sync your Supabase environments')
+    expect(stdout).toContain('Diff, sync and clone Supabase and Postgres environments')
     expect(stdout).toContain('COMMANDS')
   })
 

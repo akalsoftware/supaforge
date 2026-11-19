@@ -3,7 +3,7 @@
   "name": "supaforge",
   "display_name": "SupaForge",
   "version": "__VERSION__",
-  "description": "Find and fix drift between Supabase environments.",
+  "description": "Diff, sync and clone Supabase and Postgres environments, proving every change before it is applied.",
   "long_description": "SupaForge compares two Supabase projects — schema, RLS policies, roles and grants, auth, storage, webhooks, cron, vault, migrations and reference data — and gives the SQL to bring them back in line. It reads supaforge.config.json in the project directory you choose; scanning writes nothing, and applying a fix asks first.",
   "author": { "name": "Akal Software Ltd", "url": "https://github.com/akalsoftware" },
   "homepage": "https://supaforge.dev",

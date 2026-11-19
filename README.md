@@ -1,48 +1,64 @@
-# SupaForge
+<h1 align="center">SupaForge</h1>
 
-> Diff and sync your Supabase environments.
+<p align="center">
+  <strong>Diff, sync and clone Supabase and Postgres environments - and prove every change before it reaches production.</strong>
+</p>
 
-[![CI](https://github.com/akalsoftware/supaforge/actions/workflows/ci.yml/badge.svg)](https://github.com/akalsoftware/supaforge/actions/workflows/ci.yml)
-[![npm version](https://img.shields.io/npm/v/@akal/supaforge.svg)](https://www.npmjs.com/package/@akal/supaforge)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+<p align="center">
+  <a href="https://github.com/akalsoftware/supaforge/actions/workflows/ci.yml"><img src="https://github.com/akalsoftware/supaforge/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://www.npmjs.com/package/@akal/supaforge"><img src="https://img.shields.io/npm/v/@akal/supaforge.svg" alt="npm version"></a>
+  <a href="https://www.npmjs.com/package/@akal/supaforge"><img src="https://img.shields.io/npm/dm/@akal/supaforge.svg" alt="npm downloads"></a>
+  <a href="https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.akalsoftware/supaforge"><img src="https://img.shields.io/badge/MCP_Registry-supaforge-blue" alt="MCP Registry"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+</p>
 
-Supabase projects running as dev, staging and production drift apart, and
-nothing in Supabase tells you. A policy added in staging never reaches
-production; a bucket goes public in one place only; a cron job, webhook or
-grant exists on one side and not the other.
+<p align="center">
+  <a href="https://supaforge.dev">Website</a> ·
+  <a href="packages/cli/README.md">Documentation</a> ·
+  <a href="https://supaforge.dev/guides">Guides</a> ·
+  <a href="https://github.com/akalsoftware/supaforge-action">GitHub Action</a>
+</p>
 
-SupaForge finds every one of those differences across the whole project, not
-just the schema. It then makes the target match the source safely, and can
-prove the result before it touches anything.
+---
 
-**CVE-2025-48757** found 170+ apps with exposed databases because RLS policies
-never reached production. SupaForge catches that on the first scan.
+Dev, staging and production drift apart, and nothing tells you until
+something breaks. A policy added in staging never reaches production. A bucket
+is public in one place only. A cron job, webhook or grant exists on one side
+and not the other. A migration that worked on your laptop locks a live table.
 
-Built by **[Akal](https://github.com/akalsoftware)**.
+**SupaForge finds every one of those differences across the whole project, not
+just the schema, and makes the target match the source safely.** It works
+with Supabase Cloud, self-hosted Supabase, local stacks and plain PostgreSQL.
 
-## Why SupaForge
+```bash
+npx @akal/supaforge init     # point it at two environments
+npx @akal/supaforge diff     # see everything that differs
+```
 
-- **The whole project.** It compares more than tables and columns:
-  - RLS policies and RLS coverage;
-  - storage buckets and their policies;
-  - auth config and Edge Functions;
-  - cron jobs, queues, webhooks and Realtime;
-  - Vault, extensions, roles and grants;
-  - reference data and migration history.
-- **Fixes, not just reports.** Fixes run in dependency order, in one
-  transaction, and roll back cleanly if anything fails. Anything that would
-  lose data or open up access waits for an explicit `--allow-destructive`.
-- **Proof before change.** `--prove` rehearses the migration on a throwaway
-  copy of the target and applies nothing unless the result matches the
-  source.
-- **One project is enough.** Snapshot a project's structure and
-  configuration, restore it into an empty database (Supabase or plain
-  PostgreSQL), or clone it locally with its data.
-- **Hosted and self-hosted.** It works with Supabase Cloud, self-hosted
-  stacks, and local clones.
-- **Built for pipelines and agents.** `--ci` gives GitHub annotations and
-  meaningful exit codes, `--json` output is machine-readable throughout, and a
-  built-in MCP server lets AI agents scan and fix safely.
+## Why teams use it
+
+- **🔒 Catch security gaps before users do.** An RLS policy that never reached
+  production leaves a table open to anyone with the anon key -
+  CVE-2025-48757 exposed real apps exactly this way. SupaForge reports missing
+  or changed policies, tables with RLS switched off, and what `anon`,
+  `authenticated` and `service_role` can touch on each side.
+- **🧭 The whole project, not just tables.** Schema and reference data, RLS
+  policies, roles and grants, storage buckets and their policies, auth config,
+  Edge Functions, cron jobs, queues, webhooks, Realtime, Vault, extensions and
+  migration history.
+- **🛡️ Fixes you can trust on a live database.** Fixes run in dependency
+  order, in one transaction, and roll back cleanly if anything fails. Each
+  says which lock it takes and whether it rewrites a table. Anything that loses
+  data or opens up access waits for `--allow-destructive`.
+- **✅ Proof before change.** `--prove` rehearses the migration on a throwaway
+  copy of the target, rows included, and applies nothing unless the result
+  matches the source.
+- **🤖 Safe for AI agents.** A built-in MCP server lets Claude, Cursor and VS
+  Code agents diff and sync your environments, showing you the plan before
+  anything is written.
+- **⚙️ Built for pipelines.** `--ci` adds GitHub annotations and meaningful
+  exit codes, `--json` is machine-readable throughout, and the GitHub Action
+  puts a drift summary on every run.
 
 ## Quick start
 
@@ -53,9 +69,10 @@ supaforge init              # create supaforge.config.json
 supaforge diff              # what has drifted?
 supaforge diff --detail     # with the SQL
 supaforge diff --apply      # fix the target
+supaforge diff --apply --prove   # rehearse on a copy first, then fix
 ```
 
-Only one project?
+Only one project? Snapshot it, restore it anywhere, or clone it locally:
 
 ```bash
 supaforge snapshot --env=prod --apply                       # record it
@@ -65,14 +82,19 @@ supaforge clone --env=prod --apply                          # local copy, data i
 
 Everything that writes previews first. Add `--apply` to make it happen.
 
-Also on Homebrew (`brew install akalsoftware/tap/supaforge`), as a
-[GitHub Action](https://github.com/akalsoftware/supaforge-action), and as an
-MCP server for Cursor, VS Code and Claude, with one-click installs — see
-[Install](packages/cli/README.md#install).
+## Use it where you work
 
-**[Full documentation →](packages/cli/README.md)**: the checks, commands,
-safety model, snapshots and restore, migrations, configuration, self-hosted
-Supabase, CI and MCP.
+| Where | How |
+| --- | --- |
+| Terminal | `npm install -g @akal/supaforge`, `npx @akal/supaforge`, or `brew install akalsoftware/tap/supaforge` |
+| Docker | `docker run --rm -v "$PWD:/work" ghcr.io/akalsoftware/supaforge diff` |
+| GitHub Actions | [`akalsoftware/supaforge-action`](https://github.com/akalsoftware/supaforge-action) |
+| Claude Code | `/plugin marketplace add akalsoftware/claude-plugins`, then `/plugin install supaforge@akalsoftware` |
+| Claude Desktop, Cursor, VS Code | One-click MCP installs - see [MCP](packages/cli/README.md#mcp-ai-agents) |
+
+**[Full documentation →](packages/cli/README.md)**: every check, command and
+flag, the safety model, snapshots and restore, migrations, configuration,
+self-hosted Supabase, CI and MCP.
 
 ## Under the hood
 
@@ -85,6 +107,7 @@ against an independent catalog oracle and against `--prove`.
 | Path | What |
 | --- | --- |
 | [`packages/cli`](packages/cli) | The `supaforge` CLI and library, published as [`@akal/supaforge`](https://www.npmjs.com/package/@akal/supaforge) |
+| [`packages/vscode`](packages/vscode) | The VS Code extension |
 | [`packages/mcp`](packages/mcp) | A standalone build of the MCP server, not published. Use `supaforge mcp` |
 
 ## Development
@@ -120,4 +143,5 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ## License
 
-[MIT](LICENSE). Copyright (c) 2026 Akal Software Ltd
+[MIT](LICENSE). Built by [Akal Software](https://akalsoftware.com).
+Copyright (c) 2026 Akal Software Ltd
