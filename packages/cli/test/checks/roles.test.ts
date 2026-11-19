@@ -312,6 +312,17 @@ describe('RolesCheck: the queries it runs', () => {
     expect(roles).toMatch(/rolname\s*<>\s*current_user/)
   })
 
+  // Supabase reserves these: it refuses to drop or alter them, so offering
+  // DROP ROLE when plain PostgreSQL is synced into a project rolled the whole
+  // apply back.
+  it('ignores the reserved roles newer Supabase images add', async () => {
+    const { roles } = await capturedSql()
+
+    for (const role of ['supabase_etl_admin', 'supabase_privileged_role']) {
+      expect(roles, `${role} should be excluded from the attributes query`).toContain(`'${role}'`)
+    }
+  })
+
   it('still ignores the Data API roles when comparing role attributes', async () => {
     // Nobody usefully diffs whether `anon` can log in — that is Supabase's to
     // set. It is only their table grants that belong to the application.

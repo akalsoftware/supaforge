@@ -56,6 +56,10 @@ export const PLATFORM_ROLES = [
   // PostgreSQL offered to create all four on the target.
   'supabase_functions_admin', 'supabase_realtime_admin',
   'supabase_read_only_user', 'supabase_replication_admin',
+  // Newer images add these two, reserved: Supabase refuses to drop or alter
+  // them. Syncing plain PostgreSQL into such a project offered DROP ROLE for
+  // both, and the refusal rolled back the whole apply.
+  'supabase_etl_admin', 'supabase_privileged_role',
 ]
 
 /**
