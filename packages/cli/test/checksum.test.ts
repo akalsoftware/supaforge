@@ -187,6 +187,6 @@ describe('getTableFingerprint: the query it runs', () => {
     const queryFn = vi.fn(async (_url: string, _sql: string) => [{ row_count: 0, content: '' }])
     await getTableFingerprint('postgres://x', 'public.plans', queryFn)
 
-    expect(queryFn.mock.calls[0][1]).toContain('md5(t::text)')
+    expect(queryFn.mock.calls[0][1]).toContain('md5(ROW(t.*)::text)')
   })
 })

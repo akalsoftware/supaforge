@@ -34,15 +34,19 @@ export interface TableFingerprint {
 /**
  * Compute a content fingerprint for a single table.
  *
- * `t::text` renders a whole row, so the digest covers every column without
- * naming any — which keeps this working when the two sides disagree about
- * column order or one has a column the other does not.
+ * `ROW(t.*)::text` renders a whole row, so the digest covers every column
+ * without naming any — which keeps this working when the two sides disagree
+ * about column order or one has a column the other does not. It was `t::text`,
+ * which names a column instead when the table has one called `t`: the digest
+ * covered that column alone, and a change anywhere else skipped the table as
+ * unchanged.
  *
  * Its rendering can depend on server settings for a few types, so two identical
  * tables can in principle digest differently. That direction is safe: the table
  * is then handed to dbdiff, which compares it properly and reports nothing. The
- * direction that must not happen is the one this replaces — a difference the
- * fingerprint cannot see.
+ * direction that must not happen is a difference the fingerprint cannot see —
+ * which `extra_float_digits = 0`, Supabase's default, caused: both sides print
+ * 0.30000000000000004 and 0.3 alike. The pooled connections pin it (db.ts).
  */
 export async function getTableFingerprint(
   dbUrl: string,
@@ -59,7 +63,7 @@ export async function getTableFingerprint(
            coalesce(sum(('x' || substr(d, 1, 16))::bit(64)::bigint::numeric), 0)::text
              || ':' ||
            coalesce(sum(('x' || substr(d, 17, 16))::bit(64)::bigint::numeric), 0)::text AS content
-    FROM (SELECT md5(t::text) AS d FROM ${quoteIdent(table)} t) s
+    FROM (SELECT md5(ROW(t.*)::text) AS d FROM ${quoteIdent(table)} t) s
   `
   const [row] = await queryFn(dbUrl, sql) as unknown as [{ row_count: number; content: string }]
   return {

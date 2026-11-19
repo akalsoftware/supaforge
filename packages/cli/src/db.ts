@@ -59,10 +59,25 @@ export function newPgClient(dbUrl: string, queryTimeoutMs?: number): pg.Client {
  * The same for a pool: its own `'error'` event (an idle client dropped), and
  * every client's while it is checked out, when the pool's listener is off.
  */
+/**
+ * Output formats pinned on every pooled connection.
+ *
+ * Supabase sets `extra_float_digits = 0`, which prints a double rounded to 15
+ * digits: 0.30000000000000004 and 0.3 print alike, so a fingerprint comparing
+ * them as text called two different tables equal and skipped them. Both
+ * settings change only how values print, never how SQL is read, so nothing
+ * run on these connections means anything different. pg_dump sets the same.
+ */
+export const PINNED_OUTPUT = 'SET extra_float_digits = 3; SET bytea_output = hex'
+
 export function newPgPool(config: pg.PoolConfig): pg.Pool {
   const pool = new pg.Pool(config)
   pool.on('error', () => undefined)
-  pool.on('connect', client => { client.on('error', () => undefined) })
+  pool.on('connect', client => {
+    client.on('error', () => undefined)
+    // Queued ahead of the first query the pool hands this client to.
+    client.query(PINNED_OUTPUT).catch(() => undefined)
+  })
   return pool
 }
 
