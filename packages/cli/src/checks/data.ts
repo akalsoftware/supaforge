@@ -1,5 +1,6 @@
 import type { DriftIssue } from '../types/drift'
-import { runDbDiff, sqlToIssues, type DbDiffOptions } from '../dbdiff'
+import { dataScope, runDbDiff, sqlToIssues, type DbDiffOptions } from '../dbdiff'
+import { DEFAULT_IGNORE_SCHEMAS } from '../defaults'
 import { filterChangedTables } from '../checksum'
 import type { QueryFn } from '../db'
 import { pgQuery } from '../db'
@@ -58,7 +59,7 @@ export class DataCheck extends Check {
         targetUrl: ctx.target.dbUrl,
         type: 'data',
         include: 'both',
-        tables: changed,
+        ...dataScope(changed, ctx.config.ignoreSchemas ?? DEFAULT_IGNORE_SCHEMAS),
         timeoutSeconds: ctx.target?.checks?.schema?.timeout,
       })
       return sqlToIssues(result, 'data')

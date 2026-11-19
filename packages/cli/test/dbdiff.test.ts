@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import {
   dbdiffUrlEnv,
+  dataScope,
   parseDbDiffOutput,
   sqlToIssues,
   foldCommentsIntoCreates,
@@ -149,10 +150,13 @@ describe('buildDbDiffArgs', () => {
     expect(args.filter(a => a.startsWith('--ignore-tables='))).toEqual(['--ignore-tables=cache_x'])
   })
 
-  // checks.data.tables names tables in public; a data diff stays there.
-  it('leaves a data diff in public', () => {
+  // A data diff stays in public unless it is given schemas, which dataScope()
+  // does only for a table named with its schema.
+  it('leaves a data diff in public unless given schemas', () => {
+    const inPublic = buildDbDiffArgs({ ...base, type: 'data' }, '/tmp/o.sql')
+    expect(inPublic.some(a => a.startsWith('--ignore-schemas='))).toBe(false)
     const args = buildDbDiffArgs({ ...base, type: 'data', ignoreSchemas: ['auth'] }, '/tmp/o.sql')
-    expect(args.some(a => a.startsWith('--ignore-schemas='))).toBe(false)
+    expect(args.some(a => a.startsWith('--ignore-schemas='))).toBe(true)
     expect(args.some(a => a.startsWith('--ignore-tables='))).toBe(false)
   })
 
@@ -160,6 +164,40 @@ describe('buildDbDiffArgs', () => {
     const args = buildDbDiffArgs(base, '/tmp/o.sql')
     expect(args.some(a => a.startsWith('--tables='))).toBe(false)
     expect(args.some(a => a.startsWith('--ignore-tables='))).toBe(false)
+  })
+})
+
+// A data table outside `public` was never read: dbdiff compares `public`
+// alone unless given the schemas, and the data check reported it clean.
+describe('dataScope', () => {
+  const ignore = ['auth', 'storage']
+
+  it('leaves bare names as they were: `public` only, no schemas passed', () => {
+    expect(dataScope(['plans', 'prices'], ignore)).toEqual({ tables: ['plans', 'prices'] })
+  })
+
+  it('reads the user schemas when a table is named with its schema, pinning bare names to public', () => {
+    expect(dataScope(['app.plans', 'prices'], ignore)).toEqual({
+      tables: ['app.plans', 'public.prices'],
+      ignoreSchemas: ignore,
+    })
+  })
+
+  it('passes those schemas to a data diff', () => {
+    const args = buildDbDiffArgs({
+      sourceUrl: 'postgres://s', targetUrl: 'postgres://t', type: 'data', include: 'both',
+      ...dataScope(['app.plans'], ignore),
+    }, '/tmp/o.sql')
+    expect(args.some(a => a.startsWith('--ignore-schemas=') && a.includes('auth') && a.includes('storage'))).toBe(true)
+    expect(args).toContain('--tables=app.plans')
+  })
+
+  it('passes none for bare names', () => {
+    const args = buildDbDiffArgs({
+      sourceUrl: 'postgres://s', targetUrl: 'postgres://t', type: 'data', include: 'both',
+      ...dataScope(['plans'], ignore),
+    }, '/tmp/o.sql')
+    expect(args.some(a => a.startsWith('--ignore-schemas='))).toBe(false)
   })
 })
 
