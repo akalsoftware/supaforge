@@ -1,12 +1,21 @@
 # supaforge
 
-> Diff and sync your Supabase environments.
+> Diff, sync and clone Supabase and Postgres environments - and prove every change before it reaches production.
 
-SupaForge compares two Supabase projects (dev and prod, say) across
-everything that makes up a project, not just the schema. It reports every
-difference and makes the target match the source. Fixes run in dependency
-order, in one transaction, and can be proved on a throwaway copy before
-anything changes. With a single project, it snapshots, restores and clones it.
+[![CI](https://github.com/akalsoftware/supaforge/actions/workflows/ci.yml/badge.svg)](https://github.com/akalsoftware/supaforge/actions/workflows/ci.yml)
+[![npm version](https://img.shields.io/npm/v/@akal/supaforge.svg)](https://www.npmjs.com/package/@akal/supaforge)
+[![npm downloads](https://img.shields.io/npm/dm/@akal/supaforge.svg)](https://www.npmjs.com/package/@akal/supaforge)
+[![MCP Registry](https://img.shields.io/badge/MCP_Registry-supaforge-blue)](https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.akalsoftware/supaforge)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/akalsoftware/supaforge/blob/main/LICENSE)
+
+SupaForge compares two environments (dev and prod, say) across everything
+that makes up a Supabase project, not just the schema. It reports every
+difference, including the security gaps - an RLS policy that never reached
+production, a bucket public on one side only - and makes the target match the
+source. Fixes run in dependency order, in one transaction, and can be proved
+on a throwaway copy before anything changes. With a single project, it
+snapshots, restores and clones it. It works with Supabase Cloud, self-hosted
+Supabase, local stacks and plain PostgreSQL.
 
 - **The whole project.** It covers schema, RLS, storage, auth, Edge Functions,
   cron, webhooks, Realtime, queues, partition sets, Vault, extensions, grants,
@@ -22,7 +31,8 @@ anything changes. With a single project, it snapshots, restores and clones it.
 - **Anywhere.** It works with Supabase Cloud, self-hosted stacks, plain
   PostgreSQL targets, CI pipelines and AI agents (MCP).
 
-Built by [Akal](https://github.com/akalsoftware).
+Built by [Akal Software](https://akalsoftware.com). Website and guides:
+[supaforge.dev](https://supaforge.dev).
 
 ## Quick start
 
@@ -44,9 +54,9 @@ Everything that writes previews first. Add `--apply` to make it happen.
 | npm | `npm install -g @akal/supaforge`, or run it with `npx @akal/supaforge` |
 | Homebrew | `brew install akalsoftware/tap/supaforge` |
 | Docker | `docker run --rm -v "$PWD:/work" ghcr.io/akalsoftware/supaforge diff` |
-| GitHub Actions | [`akalsoftware/supaforge-action`](https://github.com/akalsoftware/supaforge-action) — see [CI](#ci-and-exit-codes) |
+| GitHub Actions | [`akalsoftware/supaforge-action`](https://github.com/akalsoftware/supaforge-action) - see [CI](#ci-and-exit-codes) |
 | VS Code and its forks | The SupaForge extension: commands, and the MCP server for the editor's agent. Each [release](https://github.com/akalsoftware/supaforge/releases/latest) carries it as a `.vsix` |
-| Cursor, VS Code, Claude | One-click installs of the MCP server — see [MCP](#mcp-ai-agents) |
+| Cursor, VS Code, Claude | One-click installs of the MCP server - see [MCP](#mcp-ai-agents) |
 
 It needs Node.js 22 or newer. DBDiff, its diff engine, comes with it as a
 native binary for your platform, so there is nothing else to install. The
@@ -279,7 +289,7 @@ supaforge migrate run --env=prod --apply
 | `SUPAFORGE_CONNECT_TIMEOUT` | `15` | Seconds to wait for a connection |
 | `SUPAFORGE_CHECK_CONCURRENCY` | `4` | Checks run at once. Lower it behind a tight pooler |
 | `SUPAFORGE_PROVE_ROWS` | `1000` | Rows of each table `--prove` copies to check they survive; `0` checks structure only |
-| `SUPAFORGE_PG_BIN` | — | A directory of PostgreSQL client tools (`pg_dump`, `psql`), used ahead of `PATH` — for a server newer than the tools on `PATH` |
+| `SUPAFORGE_PG_BIN` | — | A directory of PostgreSQL client tools (`pg_dump`, `psql`), used ahead of `PATH`, for a server newer than the tools on `PATH` |
 
 ## Self-hosted Supabase
 

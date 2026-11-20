@@ -20,7 +20,7 @@ RUN apk add --no-cache postgresql18-client \
 ENV SUPAFORGE_DBDIFF_BIN=/usr/local/bin/dbdiff
 
 LABEL org.opencontainers.image.title="SupaForge" \
-      org.opencontainers.image.description="Find and fix drift between Supabase environments" \
+      org.opencontainers.image.description="Diff, sync and clone Supabase and Postgres environments" \
       org.opencontainers.image.source="https://github.com/akalsoftware/supaforge" \
       org.opencontainers.image.url="https://supaforge.dev" \
       org.opencontainers.image.licenses="MIT" \

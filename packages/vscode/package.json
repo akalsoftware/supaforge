@@ -1,7 +1,7 @@
 {
   "name": "supaforge",
   "displayName": "SupaForge",
-  "description": "Find and fix drift between Supabase environments — and let your AI agent do it, with your approval.",
+  "description": "Diff and sync Supabase and Postgres environments from the editor - or let your AI agent do it, with your approval.",
   "version": "0.0.33",
   "publisher": "akalsoftware",
   "license": "MIT",

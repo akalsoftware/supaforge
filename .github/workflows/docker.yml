@@ -167,7 +167,7 @@ jobs:
           [[ "$VERSION" == *-* ]] || tags+=(-t "$IMAGE:latest")
           docker buildx imagetools create "${tags[@]}" \
             --annotation "index:org.opencontainers.image.source=https://github.com/akalsoftware/supaforge" \
-            --annotation "index:org.opencontainers.image.description=Find and fix drift between Supabase environments" \
+            --annotation "index:org.opencontainers.image.description=Diff, sync and clone Supabase and Postgres environments" \
             --annotation "index:org.opencontainers.image.licenses=MIT" \
             "${refs[@]}"
 

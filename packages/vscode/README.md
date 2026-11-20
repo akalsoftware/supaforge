@@ -1,8 +1,8 @@
 # SupaForge for VS Code
 
-Find and fix drift between your Supabase environments — schema, RLS policies,
-roles and grants, auth, storage, webhooks, cron, vault, migrations and
-reference data — from the editor, or let your AI agent do it, with your
+Diff and sync your Supabase and Postgres environments from the editor - schema,
+RLS policies, roles and grants, auth, storage, webhooks, cron, vault,
+migrations and reference data - or let your AI agent do it, with your
 approval for every change.
 
 ## Your AI agent
@@ -13,7 +13,7 @@ SupaForge MCP server to the editor's agent (Copilot agent mode in VS Code
 
 - *What has drifted between staging and production?*
 - *Are there tables in production without RLS?*
-- *Show me the SQL to bring production's policies in line — don't run it.*
+- *Show me the SQL to bring production's policies in line - don't run it.*
 
 Scanning writes nothing. Applying fixes asks you first, and drops and deletes
 are never applied by the agent.
@@ -27,7 +27,7 @@ From the Command Palette, under **SupaForge**:
 | Find Drift | `supaforge diff` |
 | Find Drift, with the SQL | `supaforge diff --detail` |
 | Preview Fixes | `supaforge diff --apply --dry-run` |
-| Apply Fixes… | `supaforge diff --apply`, after you confirm — or with `--prove`, rehearsed on a throwaway copy first |
+| Apply Fixes… | `supaforge diff --apply`, after you confirm, or with `--prove`, rehearsed on a throwaway copy first |
 | Snapshot an Environment… | `supaforge snapshot --env=<name> --apply` |
 | Create Config | `supaforge init` |
 
