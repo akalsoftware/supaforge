@@ -249,9 +249,10 @@ export function buildDbDiffArgs(options: DbDiffOptions, outputFile: string): str
 
   // A schema diff compares every schema but the ignored ones. dbdiff named
   // tables without their schema, so these were once passed as table globs
-  // (auth.*) that matched nothing: dbdiff read `public` alone. Data diffs
-  // name their tables in checks.data.tables, which are in `public`.
-  if (options.type === 'schema' && options.ignoreSchemas) {
+  // (auth.*) that matched nothing: dbdiff read `public` alone. A data diff
+  // does the same when it is given them, which dataScope() does when a data
+  // table is named with its schema.
+  if (options.ignoreSchemas && (options.type === 'schema' || options.type === 'data')) {
     args.push(`--ignore-schemas=${schemaDiffIgnores(options.ignoreSchemas).join(',')}`)
   }
   const ignore = options.ignoreTables ?? []
@@ -267,6 +268,21 @@ export function buildDbDiffArgs(options: DbDiffOptions, outputFile: string): str
 }
 
 /** The connection URLs as dbdiff reads them from its environment (3.0.0-rc.38+). */
+/**
+ * The tables and schemas of a data diff.
+ *
+ * dbdiff compares `public` alone unless told which schemas to read, so a
+ * table named with another schema (`app.plans`) was never read, and the data
+ * check reported it clean while its rows differed. When any table is named
+ * with its schema, the diff reads every schema the schema check does, and a
+ * bare name is pinned to `public` — what it has always meant here — rather
+ * than matching a table of that name in every schema.
+ */
+export function dataScope(tables: string[], ignoreSchemas: string[]): Pick<DbDiffOptions, 'tables' | 'ignoreSchemas'> {
+  if (!tables.some(t => t.includes('.'))) return { tables }
+  return { tables: tables.map(t => (t.includes('.') ? t : `public.${t}`)), ignoreSchemas }
+}
+
 export function dbdiffUrlEnv(options: DbDiffOptions): Record<string, string> {
   if (options.urlsOnCommandLine) return {}
   return { DBDIFF_SERVER1_URL: options.sourceUrl, DBDIFF_SERVER2_URL: options.targetUrl }
