@@ -40,8 +40,11 @@ describe('e2e: data layer', () => {
 
   it.skipIf(shouldSkip())('should detect data drift in plans table', () => {
     expect(dataResult!.status).toBe('drifted')
-    // The fixtures: Enterprise only in the source, Pro priced differently.
-    expect(dataResult!.issues.map(i => i.title).sort()).toEqual(['Missing row in plans', 'Modified row in plans'])
+    // The fixtures: Enterprise only in the source, Pro priced differently —
+    // and the target's sequence, which has handed out ids 1 and 2, would give
+    // the next new plan the id the synced Enterprise row takes.
+    expect(dataResult!.issues.map(i => i.title).sort())
+      .toEqual(['Missing row in plans', 'Modified row in plans', 'Sequence behind the rows in plans'])
   })
 
   it.skipIf(shouldSkip())('should have SQL fixes for data drift', () => {
