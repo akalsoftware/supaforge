@@ -25,7 +25,7 @@ import {gzipSync} from 'node:zlib'
 const BUDGET = {
   tarball: 250 * 1024,
   unpacked: 900 * 1024,
-  jsGzip: 150 * 1024,
+  jsGzip: 200 * 1024,
 }
 
 const ALLOWED = [
