@@ -153,18 +153,22 @@ describe('integration: --apply ordering and atomicity', () => {
     expect(await exists('column', 'embedding')).toBe(false)
   })
 
-  it.skipIf(skipIfNoContainers())('leaves out an extension the server does not ship', async () => {
+  // Skipped, as the README says, not failed: a Supabase project synced into
+  // plain PostgreSQL could otherwise never exit 0, its platform extensions
+  // being unavailable there for good. What needs the extension still fails.
+  it.skipIf(skipIfNoContainers())('leaves out an extension the server does not ship, and fails what needs it', async () => {
     const fixes = [
       { id: 'extensions-create-1', up: 'CREATE EXTENSION IF NOT EXISTS sf_no_such_extension' },
       ...issue48Fixes(),
+      { id: 'schema-alter-8', up: `ALTER TABLE ${SCHEMA}.orders ADD COLUMN embedding sf_no_such_schema.vector(3)` },
     ]
 
     const result = await promote({ dbUrl: TARGET_URL!, scanResult: makeScanResult(fixes) })
 
     expect(result.rolledBack).toBeUndefined()
     expect(result.applied).toHaveLength(5)
-    expect(result.errors).toHaveLength(1)
-    expect(result.errors[0].error).toContain('this server does not ship it')
+    expect(result.skipped).toEqual([{ check: 'schema', issueId: 'extensions-create-1', reason: 'An extension this server does not ship' }])
+    expect(result.errors.map(e => e.issueId)).toEqual(['schema-alter-8'])
   })
 
   it.skipIf(skipIfNoContainers())('keeps partial progress under --no-transaction', async () => {
