@@ -30,7 +30,7 @@ function mockChangedQueryFn(): QueryFn {
   let callCount = 0
   return vi.fn(async (_url: string, sql: string) => {
     // No serial or identity columns: the sequence check finds nothing to read.
-    if (sql.includes('pg_get_serial_sequence')) return []
+    if (sql.includes('pg_depend')) return []
     callCount++
     // Alternate: even calls = source digest, odd = target (a different digest)
     return [{ row_count: 10, content: callCount % 2 === 0 ? 'source-digest' : 'target-digest' }]
@@ -141,7 +141,7 @@ describe('DataCheck honours the table filter (issue #43)', () => {
     const sqls: string[] = []
     let callCount = 0
     const queryFn: QueryFn = async (_url, sql) => {
-      if (sql.includes('pg_get_serial_sequence')) return []
+      if (sql.includes('pg_depend')) return []
       sqls.push(sql)
       callCount++
       // Always differ, so nothing is short-circuited as unchanged.

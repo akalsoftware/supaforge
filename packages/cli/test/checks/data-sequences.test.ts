@@ -8,7 +8,7 @@ import type { ScanResult } from '../../src/types/drift.js'
 /** Answers the source's column list, its max, and the target's next value. */
 function fake(opts: { max: string | null; target?: { ascending: boolean; next: string } }): QueryFn {
   return async (url, sql) => {
-    if (url === 'src' && sql.includes('pg_get_serial_sequence')) return [{ col: 'id', seq: 'public.plans_id_seq' }]
+    if (url === 'src' && sql.includes('pg_depend')) return [{ col: 'id' }]
     if (url === 'src' && sql.includes('max(')) return [{ max: opts.max }]
     if (url === 'tgt') return opts.target ? [opts.target] : []
     return []
@@ -40,7 +40,7 @@ describe('sequenceIssues', () => {
   it('fixes a table the target does not have yet, whose sequence the sync creates', async () => {
     const [issue] = await sequenceIssues('src', 'tgt', ['app.plans'], fake({ max: '3' }))
     expect(issue.description).toContain('on a sequence the sync creates')
-    expect(issue.sql!.up).toContain(`pg_get_serial_sequence('"app"."plans"', 'id')`)
+    expect(issue.sql!.up).toContain(`to_regclass('"app"."plans"')`)
   })
 })
 

@@ -20,28 +20,33 @@ import { quoteIdent, quoteLiteral, quoteName } from '../utils/sql'
 
 interface ColumnSequence {
   col: string
-  seq: string
-  max: string | null
 }
 
-/** Each serial or identity column of `table` with its sequence and the largest value in it. */
-const SOURCE_SQL = (table: string) => `
-  SELECT a.attname AS col, pg_get_serial_sequence(${quoteLiteral(quoteIdent(table))}, a.attname) AS seq
-    FROM pg_attribute a
-   WHERE a.attrelid = to_regclass(${quoteLiteral(quoteIdent(table))}) AND a.attnum > 0 AND NOT a.attisdropped
-     AND pg_get_serial_sequence(${quoteLiteral(quoteIdent(table))}, a.attname) IS NOT NULL
-   ORDER BY a.attnum`
+/**
+ * The sequence a serial or identity column owns, joined from the column:
+ * what pg_get_serial_sequence() reads, without its error for a table or
+ * column that isn't there — a table the sync is about to create is the usual
+ * case on the target, and inside a prepared statement no CASE keeps the
+ * function from being called.
+ */
+const OWNED = (table: string) => `pg_depend d
+    JOIN pg_sequence q ON q.seqrelid = d.objid
+    JOIN pg_attribute a ON a.attrelid = d.refobjid AND a.attnum = d.refobjsubid AND NOT a.attisdropped
+   WHERE d.classid = 'pg_class'::regclass AND d.refclassid = 'pg_class'::regclass AND d.deptype IN ('a', 'i')
+     AND d.refobjid = to_regclass(${table})`
+
+/** Each serial or identity column of `table`. */
+const SOURCE_SQL = (table: string) => `SELECT a.attname AS col FROM ${OWNED(quoteLiteral(quoteIdent(table)))} ORDER BY a.attnum`
 
 /**
- * The next value the target's sequence for `col` would hand out, or null when
- * the target has no such table or sequence yet (a schema fix will create it).
- * A sequence counting down is left alone.
+ * The next value the target's sequence for column $2 of table $1 would hand
+ * out; no row when the target has no such table or sequence yet (a schema
+ * fix will create it). A sequence counting down is left alone.
  */
 const TARGET_SQL = `
-  SELECT s.seqincrement > 0 AS ascending,
-         (coalesce(pg_sequence_last_value(s.seqrelid) + s.seqincrement, s.seqstart))::text AS next
-    FROM pg_sequence s
-   WHERE s.seqrelid = to_regclass(pg_get_serial_sequence($1, $2))`
+  SELECT q.seqincrement > 0 AS ascending,
+         (coalesce(pg_sequence_last_value(q.seqrelid) + q.seqincrement, q.seqstart))::text AS next
+    FROM ${OWNED('$1')} AND a.attname = $2`
 
 /**
  * The fix: run after the rows, on the target as they leave it. Sets the
@@ -49,12 +54,10 @@ const TARGET_SQL = `
  * value it would hand out, and does nothing otherwise.
  */
 export function sequenceFixSql(table: string, col: string): string {
-  const rel = quoteLiteral(quoteIdent(table))
-  return `SELECT setval(seq, top) FROM (SELECT pg_get_serial_sequence(${rel}, ${quoteLiteral(col)})::regclass AS seq,`
-    + ` (SELECT max(${quoteName(col)}) FROM ${quoteIdent(table)}) AS top) x`
-    + ` JOIN pg_sequence s ON s.seqrelid = x.seq`
-    + ` WHERE top IS NOT NULL AND s.seqincrement > 0`
-    + ` AND top >= coalesce(pg_sequence_last_value(x.seq) + s.seqincrement, s.seqstart);`
+  return `SELECT setval(q.seqrelid, top) FROM (SELECT max(${quoteName(col)}) AS top FROM ${quoteIdent(table)}) x,`
+    + ` ${OWNED(quoteLiteral(quoteIdent(table))).replace(/\s+/g, ' ')} AND a.attname = ${quoteLiteral(col)}`
+    + ` AND top IS NOT NULL AND q.seqincrement > 0`
+    + ` AND top >= coalesce(pg_sequence_last_value(q.seqrelid) + q.seqincrement, q.seqstart);`
 }
 
 /** One finding per table with a sequence the synced rows would run into. */
