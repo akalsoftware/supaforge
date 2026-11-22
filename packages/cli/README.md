@@ -150,9 +150,11 @@ Useful `diff` flags:
   triggers that call them, columns before their indexes, drops last. A changed
   object that has to be dropped and recreated is a single fix.
 - **One transaction.** If a fix fails, the whole set rolls back and the target
-  is unchanged. A fix the target can't hold, because it needs an extension or
-  a Supabase schema the target lacks, is skipped with the reason, and the rest
-  still applies.
+  is unchanged. An extension the server doesn't ship, such as Supabase's own
+  on plain PostgreSQL, is skipped with the reason, and the rest still
+  applies. So is a fix that needs something the target lacks, such as that
+  extension or a Supabase schema, but that one counts as a failure, since
+  something of yours didn't arrive.
 - **Rows into a live target.** Reference rows are written the way pg_dump's
   `--disable-triggers` and logical replication write them: the target's own
   triggers on those tables are held off while their rows are synced and put
@@ -318,11 +320,11 @@ checks run.
 ## Diffing a clone
 
 A local clone is plain PostgreSQL. Storage, auth, Edge Functions, Vault,
-Realtime and Supabase's roles have nothing to compare there, so skip those
-checks:
+Realtime, webhooks (which need Supabase's `pg_net`) and Supabase's roles have
+nothing to compare there, so skip those checks:
 
 ```json
-{ "checks": { "exclude": ["storage", "auth", "edge-functions", "vault", "realtime", "roles"] } }
+{ "checks": { "exclude": ["storage", "auth", "edge-functions", "vault", "realtime", "webhooks", "roles"] } }
 ```
 
 When the source is a clone and the target isn't, `diff` warns that `--apply`

@@ -122,6 +122,9 @@ export interface PlanOptions {
   only?: string[]
 }
 
+/** unmetDependency's reason for a CREATE EXTENSION the server cannot run. */
+const EXTENSION_NOT_SHIPPED = 'this server does not ship it'
+
 /**
  * Why a fix cannot be applied under the current scope, or null when it can.
  *
@@ -639,7 +642,7 @@ export function unmetDependency(sql: string, err: unknown, olderTarget = false):
   }
   // Anywhere in the fix: one into a schema of its own makes the schema first.
   if (/(?:^|;)\s*CREATE\s+EXTENSION\b/i.test(sqlSkeleton(sql))) {
-    return EXTENSION_UNAVAILABLE.has(code) ? 'this server does not ship it' : undefined
+    return EXTENSION_UNAVAILABLE.has(code) ? EXTENSION_NOT_SHIPPED : undefined
   }
   if (ABSENT_ON_TARGET.has(code) || code === UNDEFINED_COLUMN) {
     return 'it needs something the target does not have'
@@ -765,6 +768,13 @@ async function runBatch(
 
   await client.query('COMMIT')
   result.applied.push(...done)
+  // An extension the server does not ship can't be had by any fix: it is
+  // left out, as the README has always said, not failed. What needs it still
+  // fails below, so a lost table of the user's still sets the exit code.
+  for (const { stmt } of unmet.filter(u => u.why === EXTENSION_NOT_SHIPPED)) {
+    result.skipped.push({ check: stmt.check, issueId: stmt.issueId, reason: 'An extension this server does not ship' })
+  }
+  unmet = unmet.filter(u => u.why !== EXTENSION_NOT_SHIPPED)
   for (const { stmt, err, why } of unmet) {
     result.errors.push({
       check: stmt.check,
