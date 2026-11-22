@@ -134,7 +134,7 @@ Useful `diff` flags:
 | `--source-dir <dir>` | Compare a directory of schema files (such as `supabase/schemas`) with the target instead of a source database |
 | `--allow-destructive` | Also apply drops and deletes |
 | `--apply-posture` | Also apply the target-only checks' fixes |
-| `--no-transaction` | Apply fix by fix, keeping what works |
+| `--no-transaction` | Apply fix by fix, keeping what works. Synced rows then fire the target's triggers |
 | `--no-snapshot` | Read each query on its own. By default each database is read as of one instant, so a change made while the scan runs is seen by all of it or none; as with `pg_dump`, what it reads stays locked until the scan ends |
 | `--json` / `--ci` | Machine-readable output; CI annotations and exit codes |
 
@@ -153,6 +153,16 @@ Useful `diff` flags:
   is unchanged. A fix the target can't hold, because it needs an extension or
   a Supabase schema the target lacks, is skipped with the reason, and the rest
   still applies.
+- **Rows into a live target.** Reference rows are written the way pg_dump's
+  `--disable-triggers` and logical replication write them: the target's own
+  triggers on those tables are held off while their rows are synced and put
+  back before commit, so an `updated_at` or audit trigger doesn't rewrite
+  what was copied, and a webhook doesn't fire once per row. A trigger set
+  `ENABLE ALWAYS` still fires. A row that needs one written after it in the
+  same table, such as a node moved under a newer one, is checked against the
+  table's foreign key at the end instead, and an orphan still rolls
+  everything back. Both need the connecting role to own the table; when it
+  doesn't, the triggers fire and the run says so.
 - **Sequences follow the rows.** After syncing rows, each serial or identity
   sequence on those tables is moved past the largest id, so the app's next
   insert doesn't collide with a synced row. A sequence is only ever moved

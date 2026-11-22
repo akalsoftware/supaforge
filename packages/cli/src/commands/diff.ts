@@ -26,6 +26,9 @@ import { openSchemaDir } from '../schema-dir.js'
 /** The source environment a --source-dir run compares from. */
 const SCHEMA_FILES_ENV = 'schema files'
 
+/** Rolled-back fixes listed by id in text output before the rest are counted. */
+const ROLLED_BACK_SHOWN = 20
+
 /** What schema files can describe: the database's structure, its policies, its extensions. */
 const SCHEMA_FILE_CHECKS: CheckName[] = ['schema', 'rls', 'extensions']
 
@@ -246,6 +249,8 @@ export default class Diff extends BaseCommand {
   private renderApplyResult(result: PromoteResult, dryRun: boolean): void {
     const verb = dryRun ? 'Would apply' : 'Applied'
     for (const warning of result.warnings ?? []) this.log(`${warn(warning)}\n`)
+    for (const note of result.notes ?? []) this.log(`${dim(note)}`)
+    if (result.notes?.length) this.log('')
     if (result.applied.length > 0) {
       const heading = `${verb} ${result.applied.length} fix(es)${dryRun ? ', in this order' : ''}:`
       this.log(dryRun ? bold(heading) : ok(heading))
@@ -271,8 +276,12 @@ export default class Diff extends BaseCommand {
     // is whether anything landed, and the answer here is that nothing did.
     if (result.rolledBack?.length) {
       this.log(`\n${warn(`Rolled back ${result.rolledBack.length} fix(es)`)} — the target is unchanged:`)
-      for (const item of result.rolledBack) {
+      // A large data sync rolls back a fix per row; the count is what matters.
+      for (const item of result.rolledBack.slice(0, ROLLED_BACK_SHOWN)) {
         this.log(`  ${dim('↩')} ${dim(`[${item.check}]`)} ${item.issueId}`)
+      }
+      if (result.rolledBack.length > ROLLED_BACK_SHOWN) {
+        this.log(`  ${dim(`↩ … and ${result.rolledBack.length - ROLLED_BACK_SHOWN} more (all of them under --json)`)}`)
       }
     }
 
