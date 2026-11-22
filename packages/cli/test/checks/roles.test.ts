@@ -136,7 +136,7 @@ describe('RolesCheck', () => {
     expect(grantIssue!.sql?.up).toContain('REVOKE INSERT')
   })
 
-  it('runs all 18 queries (roles, grants, column grants, routine grants, schema grants, version, tables and routines per side; the source\'s schemas; the target\'s default grants)', async () => {
+  it('runs all 20 queries (roles, role names, grants, column grants, routine grants, schema grants, version, tables and routines per side; the source\'s schemas; the target\'s default grants)', async () => {
     const calls: string[] = []
     const queryFn: QueryFn = async (_dbUrl, sql) => {
       calls.push(sql)
@@ -144,7 +144,8 @@ describe('RolesCheck', () => {
     }
     const check = new RolesCheck(queryFn)
     await check.scan(mockContext())
-    expect(calls).toHaveLength(18)
+    expect(calls).toHaveLength(20)
+    expect(calls.filter(s => s === 'SELECT rolname FROM pg_roles')).toHaveLength(2)
     expect(calls.filter(s => s.includes('n.nspacl'))).toHaveLength(2)
     expect(calls.filter(s => s.includes('proacl'))).toHaveLength(2)
     expect(calls.filter(s => s.includes('server_version_num'))).toHaveLength(2)
@@ -412,6 +413,7 @@ describe('a new table keeps the source\'s grants, not the target\'s defaults', (
 
   function target(sql: string, dbUrl: string): unknown[] {
     const source = dbUrl.includes('source')
+    if (sql === 'SELECT rolname FROM pg_roles') return ['postgres', 'anon', 'authenticated', 'service_role'].map(rolname => ({ rolname }))
     if (sql.includes('pg_default_acl')) {
       return source ? [] : ['anon', 'authenticated'].flatMap(grantee =>
         ALL.map(privilege_type => ({ table_schema: 'public', grantee, privilege_type, is_grantable: false })))
@@ -601,5 +603,60 @@ describe('comparablePrivileges: CREATE on public across PostgreSQL 15', () => {
     expect(comparablePrivileges(140010, 140012)(g)).toBe(true)
     expect(comparablePrivileges(150008, 180000)(g)).toBe(true)
     expect(comparablePrivileges(140010, 170000)({ ...g, table_schema: 'app' })).toBe(true)
+  })
+})
+
+describe('grants to a role one side does not have at all', () => {
+  const both = new Set(['postgres', 'anon', 'authenticated', 'service_role', 'app_readonly'])
+  const plain = new Set(['postgres', 'app_readonly'])
+  const anon = (over: Record<string, unknown> = {}) => makeGrant({ grantee: 'anon', ...over })
+
+  // Plain PostgreSQL into a Supabase project: the source has no anon, so its
+  // silence about anon is no instruction to revoke. Revoking took the Data API offline.
+  it('never revokes what the target grants a role the source lacks', () => {
+    const issues = diffGrants([], [anon(), anon({ table_name: 'posts' }), anon({ object_kind: 'schema', table_schema: 'public', table_name: 'public', privilege_type: 'USAGE' })],
+      new Set(), { source: plain, target: both })
+    expect(issues).toHaveLength(1)
+    expect(issues[0].id).toBe('roles-grant-unmatched-anon')
+    expect(issues[0].severity).toBe('info')
+    expect(issues[0].sql).toBeUndefined()
+    expect(issues[0].manualOnly).toContain('does not exist on the source')
+  })
+
+  it('still revokes from a role both sides have, and from PUBLIC', () => {
+    const issues = diffGrants([], [anon(), makeGrant({ grantee: 'PUBLIC' })], new Set(), { source: both, target: both })
+    expect(issues.map(i => i.sql?.up)).toEqual([
+      'REVOKE SELECT ON "public"."users" FROM "anon";',
+      'REVOKE SELECT ON "public"."users" FROM PUBLIC;',
+    ])
+  })
+
+  // A Supabase project into plain PostgreSQL: every GRANT to anon failed.
+  it('grants nothing to a Supabase API role the target does not have', () => {
+    const issues = diffGrants([anon(), makeGrant({ grantee: 'service_role' })], [], new Set(), { source: both, target: plain })
+    expect(issues.map(i => i.id).sort()).toEqual(['roles-grant-missing-role-anon', 'roles-grant-missing-role-service_role'])
+    expect(issues.every(i => i.sql === undefined && i.manualOnly?.includes('Supabase role'))).toBe(true)
+  })
+
+  it('leaves a custom role the target lacks to the Missing role fix, grants included', () => {
+    const issues = diffGrants([makeGrant({ grantee: 'app_writer' })], [], new Set(['app_writer']), { source: both, target: plain })
+    expect(issues[0].id).toBe('roles-grant-missing-role-app_writer')
+    expect(issues[0].sql?.up).toBe('GRANT SELECT ON "public"."users" TO "app_writer";')
+  })
+
+  it('behaves as before when the role lists are unknown', () => {
+    expect(diffGrants([], [anon()]).map(i => i.sql?.up)).toEqual(['REVOKE SELECT ON "public"."users" FROM "anon";'])
+  })
+})
+
+describe('an extra login role', () => {
+  // Roles are server-wide: a login role may be another database's or another
+  // service's credential, which nothing in this diff can see.
+  it('is reported with its DROP, but left for a person to run', () => {
+    const [login] = diffRoles([], [makeRole({ rolname: 'reporting_app', rolcanlogin: true })])
+    expect(login.sql?.up).toBe('DROP ROLE IF EXISTS "reporting_app";')
+    expect(login.manualOnly).toMatch(/can log in.*shared by every database/)
+    const [group] = diffRoles([], [makeRole({ rolname: 'readers', rolcanlogin: false })])
+    expect(group.manualOnly).toBeUndefined()
   })
 })
