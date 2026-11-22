@@ -69,7 +69,7 @@ Docker image needs nothing at all, and carries the PostgreSQL client tools
 | Check | What it reads | Fixed with |
 | --- | --- | --- |
 | Schema | [`@dbdiff/cli`](https://github.com/DBDiff/DBDiff): every schema you own | SQL |
-| Reference data | Rows of the tables in `checks.data.tables` | SQL |
+| Reference data | Rows of the tables in `checks.data.tables`, and the sequences behind their ids | SQL |
 | RLS policies | `pg_policies`, compared by meaning, not text | SQL |
 | RLS coverage | Tables in the target with RLS off (target only) | SQL, opt-in |
 | Edge Functions | Management API, Studio, or a functions directory | Deploy command |
@@ -153,6 +153,10 @@ Useful `diff` flags:
   is unchanged. A fix the target can't hold, because it needs an extension or
   a Supabase schema the target lacks, is skipped with the reason, and the rest
   still applies.
+- **Sequences follow the rows.** After syncing rows, each serial or identity
+  sequence on those tables is moved past the largest id, so the app's next
+  insert doesn't collide with a synced row. A sequence is only ever moved
+  forward, and one left behind by an earlier sync is reported too.
 - **`--prove`.** The fixes are replayed on a copy of the target's structure,
   made on the target's own server, the way the apply will run them, with a
   sample of each table's rows. Nothing is applied unless the result matches

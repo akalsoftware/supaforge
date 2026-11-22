@@ -64,6 +64,8 @@ export const PHASE = {
   COMMENT: 95,
   /** Row changes, once the structure holding them is in place. */
   DATA: 100,
+  /** A sequence moved past the ids the row changes wrote — see checks/data-sequences. */
+  AFTER_DATA: 105,
   DROP_TABLE: 110,
   /**
    * Routines, dropped once nothing calls them: the triggers, views and
@@ -118,6 +120,7 @@ const PHASE_RULES: Array<[RegExp, number]> = [
   [/^\s*DROP\s+TABLE\b/i, PHASE.DROP_TABLE],
   [/^\s*DROP\s+(?:TYPE|DOMAIN|SEQUENCE)\b/i, PHASE.DROP_BASE],
   [/^\s*(?:INSERT|UPDATE|DELETE)\b/i, PHASE.DATA],
+  [/^\s*SELECT\s+setval\s*\(/i, PHASE.AFTER_DATA],
 ]
 
 /** Which execution phase a statement belongs to. */

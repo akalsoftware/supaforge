@@ -174,6 +174,22 @@ function withDefaultGrantRevokes(scanResult: ScanResult, only: string[] | undefi
   return [...only, ...companions]
 }
 
+/**
+ * `--only` plus the sequence fixes, when it selects any row fix.
+ *
+ * Rows synced without their sequence moved past them leave the next insert
+ * to fail on a duplicate key (see checks/data-sequences). A sequence fix only
+ * ever moves forward and reads the table as the apply leaves it, so bringing
+ * all of them along is safe whichever rows were picked.
+ */
+function withSequenceFixes(scanResult: ScanResult, only: string[] | undefined): string[] | undefined {
+  if (!only?.length) return only
+  const issues = scanResult.checks.flatMap(c => c.issues)
+  const rows = issues.some(i => i.check === 'data' && !i.id.startsWith('data-sequence-') && isSelected(i.id, only))
+  if (!rows) return only
+  return [...only, ...issues.filter(i => i.id.startsWith('data-sequence-')).map(i => i.id)]
+}
+
 /** `schema.name` (lower case, `public` when unqualified) of each table and view the SQL creates, and `schema.name(` of each routine. */
 function relationsCreatedBy(sql: string): string[] {
   const statements = parseStatements(sql)
@@ -277,7 +293,7 @@ function policiesCreatedBySelectedFixes(checks: ScanResult['checks'], options: P
  * reported it — see `orderStatements`.
  */
 export function planWork(scanResult: ScanResult, options: PlanOptions = {}): PlannedWork {
-  options = { ...options, only: withDefaultGrantRevokes(scanResult, options.only) }
+  options = { ...options, only: withSequenceFixes(scanResult, withDefaultGrantRevokes(scanResult, options.only)) }
   const plan: PlannedWork = { sqlStatements: [], apiActions: [], skipped: [] }
 
   const relevant = scanResult.checks.filter(

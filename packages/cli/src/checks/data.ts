@@ -6,6 +6,7 @@ import type { QueryFn } from '../db'
 import { pgQuery } from '../db'
 import { Check, CheckSkipped, type CheckContext } from './base'
 import { applyTableFilter } from '../utils/table-filter'
+import { sequenceIssues } from './data-sequences'
 
 export type RunDbDiffFn = (options: DbDiffOptions) => ReturnType<typeof runDbDiff>
 
@@ -51,7 +52,10 @@ export class DataCheck extends Check {
       this.queryFn,
     )
 
-    if (changed.length === 0) return []
+    // Every configured table, changed or not: a target synced before this
+    // check existed has its rows right and its sequences behind them.
+    const sequences = await sequenceIssues(ctx.source.dbUrl, ctx.target.dbUrl, tables, this.queryFn)
+    if (changed.length === 0) return sequences
 
     try {
       const result = await this.runFn({
@@ -62,10 +66,10 @@ export class DataCheck extends Check {
         ...dataScope(changed, ctx.config.ignoreSchemas ?? DEFAULT_IGNORE_SCHEMAS),
         timeoutSeconds: ctx.target?.checks?.schema?.timeout,
       })
-      return sqlToIssues(result, 'data')
+      return [...sqlToIssues(result, 'data'), ...sequences]
     } catch (err) {
       if (err instanceof Error && err.message.includes('@dbdiff/cli is not installed')) {
-        return []
+        return sequences
       }
       throw err
     }
