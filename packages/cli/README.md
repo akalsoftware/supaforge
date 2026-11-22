@@ -189,6 +189,8 @@ A snapshot records a project's structure and configuration: schema, RLS
 policies, cron, webhooks, extensions, storage, auth, Edge Functions,
 reference data, Realtime, Vault names and grants. **It is not a
 backup.** It holds no rows beyond `checks.data.tables`, and no stored files.
+Those rows are written in one fixed text format, so they restore exactly into
+a server whose date, time zone or number settings differ from the source's.
 Its schema is written as SQL by `pg_dump`, which has to be at least as new as
 the server; without one the snapshot can still be diffed but not restored, and
 `snapshot` exits 1 unless `--allow-schema-json-only` says that is enough.
