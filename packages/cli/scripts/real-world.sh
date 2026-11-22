@@ -161,11 +161,12 @@ rows(){ q "$1" -c "SELECT format('%I.%I', n.nspname, c.relname) FROM pg_class c 
 # hid a sync that rounded it), ordered by bytes whatever each side's collation,
 # and read through ROW(x.*), which a column named x can't stand in for.
 PINNED='-c DateStyle=ISO,MDY -c IntervalStyle=postgres -c TimeZone=UTC -c extra_float_digits=3 -c bytea_output=hex'
-# Not counted: RLS coverage (the datasets have no policies), and the note that
-# a Supabase platform extension stays in Supabase's schema, which is reported
-# by design with nothing to apply.
+# Not counted: RLS coverage (the datasets have no policies), and two notes
+# reported by design with nothing to apply: a Supabase platform extension
+# staying in Supabase's schema, and a plain source's silence about the Data
+# API roles, whose grants on a Supabase target are left as they are.
 issues(){ jq '[.. | objects | select(has("issues") and (.check // .name) != "rls-coverage") | .issues[]
-    | select((.severity == "info" and (.id | test("-extension-schema-[0-9]+$")) and (has("sql") | not)) | not)] | length' "$1" 2>/dev/null || echo '?'; }
+    | select((.severity == "info" and (.id | test("-extension-schema-[0-9]+$|^roles-grant-unmatched-")) and (has("sql") | not)) | not)] | length' "$1" 2>/dev/null || echo '?'; }
 SAME=$([ "$(major $SOURCE)" = "$(major $TARGET)" ] && echo 1 || echo 0)
 
 record(){ printf '%s\t%s\t%s\t%s\n' "$DATASET $SOURCE>$TARGET" "$1" "$2" "$3" >> "$RES"; printf '  %-8s %-4s %s\n' "$1" "$2" "$3"; }
