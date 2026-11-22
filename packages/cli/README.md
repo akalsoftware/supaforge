@@ -310,11 +310,11 @@ checks run.
 ## Diffing a clone
 
 A local clone is plain PostgreSQL. Storage, auth, Edge Functions, Vault,
-Realtime and Supabase's roles have nothing to compare there, so skip those
-checks:
+Realtime, webhooks (which need Supabase's `pg_net`) and Supabase's roles have
+nothing to compare there, so skip those checks:
 
 ```json
-{ "checks": { "exclude": ["storage", "auth", "edge-functions", "vault", "realtime", "roles"] } }
+{ "checks": { "exclude": ["storage", "auth", "edge-functions", "vault", "realtime", "webhooks", "roles"] } }
 ```
 
 When the source is a clone and the target isn't, `diff` warns that `--apply`
