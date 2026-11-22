@@ -87,7 +87,7 @@ describe('promote: one fix the target cannot take', () => {
     expect(result.errors).toHaveLength(1)
     expect(result.errors[0].issueId).toBe('vec')
     expect(result.errors[0].error).toContain('relation "vector" does not exist')
-    expect(result.errors[0].error).toContain('The other fixes were')
+    expect(result.errors[0].error).toContain('Everything else was applied')
     expect(committed).toEqual(new Set(['a', 'b']))
   })
 

@@ -147,7 +147,7 @@ describe('integration: --apply ordering and atomicity', () => {
     expect(result.rolledBack).toBeUndefined()
     expect(result.applied).toHaveLength(5)
     expect(result.errors.map(e => e.issueId).sort()).toEqual(['schema-alter-8', 'schema-create-index-9'])
-    expect(result.errors[0].error).toContain('The other fixes were')
+    expect(result.errors[0].error).toContain('Everything else was applied')
     expect(await exists('column', 'status')).toBe(true)
     expect(await exists('function', 'touch_updated')).toBe(true)
     expect(await exists('column', 'embedding')).toBe(false)

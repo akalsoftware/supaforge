@@ -134,7 +134,7 @@ Useful `diff` flags:
 | `--source-dir <dir>` | Compare a directory of schema files (such as `supabase/schemas`) with the target instead of a source database |
 | `--allow-destructive` | Also apply drops and deletes |
 | `--apply-posture` | Also apply the target-only checks' fixes |
-| `--no-transaction` | Apply fix by fix, keeping what works |
+| `--no-transaction` | Apply fix by fix, keeping what works. Synced rows then fire the target's triggers |
 | `--no-snapshot` | Read each query on its own. By default each database is read as of one instant, so a change made while the scan runs is seen by all of it or none; as with `pg_dump`, what it reads stays locked until the scan ends |
 | `--json` / `--ci` | Machine-readable output; CI annotations and exit codes |
 
@@ -155,6 +155,16 @@ Useful `diff` flags:
   applies. So is a fix that needs something the target lacks, such as that
   extension or a Supabase schema, but that one counts as a failure, since
   something of yours didn't arrive.
+- **Rows into a live target.** Reference rows are written the way pg_dump's
+  `--disable-triggers` and logical replication write them: the target's own
+  triggers on those tables are held off while their rows are synced and put
+  back before commit, so an `updated_at` or audit trigger doesn't rewrite
+  what was copied, and a webhook doesn't fire once per row. A trigger set
+  `ENABLE ALWAYS` still fires. A row that needs one written after it in the
+  same table, such as a node moved under a newer one, is checked against the
+  table's foreign key at the end instead, and an orphan still rolls
+  everything back. Both need the connecting role to own the table; when it
+  doesn't, the triggers fire and the run says so.
 - **`--prove`.** The fixes are replayed on a copy of the target's structure,
   made on the target's own server, the way the apply will run them, with a
   sample of each table's rows. Nothing is applied unless the result matches

@@ -16,6 +16,7 @@ import { splitSqlStatements, isCommentOnly } from './utils/sql-split.js'
 import { applyTableFilter, isFiltered, type TableFilter } from './utils/table-filter.js'
 import { isComparisonCheck } from './types/drift.js'
 import { matchesGlob } from './utils/strings.js'
+import { DataSyncGuard } from './data-sync.js'
 
 export type FetchFn = (url: string, init?: RequestInit) => Promise<Response>
 
@@ -92,8 +93,14 @@ export interface PromoteResult {
    * lists what is actually in the target now.
    */
   rolledBack?: (FixOrigin & { sql?: string })[]
-  /** Said before the fixes ran: they may need more locks than the target has — see lock-budget. */
+  /**
+   * Said before the fixes ran: they may need more locks than the target has —
+   * see lock-budget; or as they ran: triggers that fired on synced rows — see
+   * data-sync.
+   */
   warnings?: string[]
+  /** How the data fixes were applied: the triggers held off, the keys checked at the end — see data-sync. */
+  notes?: string[]
 }
 
 interface PlannedWork {
@@ -504,7 +511,13 @@ async function executeSql(
   try {
     const olderTarget = sourceMajor !== undefined && (await majorOf(client)) < sourceMajor
     if (transactional) await runInTransaction(client, statements, result, olderTarget)
-    else await runIndependently(client, statements, result)
+    else {
+      if (statements.some(s => s.check === 'data')) {
+        result.warnings = [...(result.warnings ?? []), 'With --no-transaction the target\'s triggers fire on the rows synced, '
+          + 'and a row that needs one written after it in the same table fails: both need the single transaction.']
+      }
+      await runIndependently(client, statements, result)
+    }
   } finally {
     await client.end()
   }
@@ -661,6 +674,24 @@ export function revokesFromAbsent(sql: string): boolean {
 }
 
 
+/**
+ * After `sql` failed with `err` inside its savepoint: when that was the
+ * table's own foreign key, roll back to the savepoint, defer the key, and run
+ * the fix again. True when it then succeeded; on false the transaction is
+ * left for the caller to roll back.
+ */
+async function retriedWithKeyDeferred(client: pg.Client, guard: DataSyncGuard, sql: string, err: unknown): Promise<boolean> {
+  try {
+    if (!(await client.query('ROLLBACK TO SAVEPOINT sf_fix').then(() => true, () => false))) return false
+    if (!(await guard.deferSelfReference(sql, err))) return false
+    await client.query(sql)
+    await client.query('RELEASE SAVEPOINT sf_fix')
+    return true
+  } catch {
+    return false
+  }
+}
+
 /** One transaction; true when it committed. */
 async function runBatch(
   client: pg.Client,
@@ -670,6 +701,14 @@ async function runBatch(
 ): Promise<boolean> {
   if (statements.length === 0) return true
   const done: PromoteResult['applied'] = []
+  const guard = new DataSyncGuard(client)
+  // Anything that ends the batch early, with what ran so far undone.
+  const fail = async (stmt: FixOrigin, err: unknown): Promise<false> => {
+    await client.query('ROLLBACK').catch(() => {})
+    result.errors.push({ check: stmt.check, issueId: stmt.issueId, error: errMsg(err) })
+    result.rolledBack = [...(result.rolledBack ?? []), ...done.map(({ check, issueId }) => ({ check, issueId }))]
+    return false
+  }
   await client.query('BEGIN')
 
   // Fixes whose dependency is missing are tried again once the others have
@@ -680,6 +719,13 @@ async function runBatch(
   while (pending.length > 0) {
     unmet = []
     for (const stmt of pending) {
+      if (stmt.check === 'data') {
+        try {
+          await guard.before(stmt.sql)
+        } catch (err) {
+          return fail(stmt, err)
+        }
+      }
       await client.query('SAVEPOINT sf_fix')
       try {
         await client.query(stmt.sql)
@@ -691,10 +737,13 @@ async function runBatch(
           unmet.push({ stmt, err, why })
           continue
         }
-        await client.query('ROLLBACK').catch(() => {})
-        result.errors.push({ check: stmt.check, issueId: stmt.issueId, error: errMsg(err) })
-        result.rolledBack = [...(result.rolledBack ?? []), ...done]
-        return false
+        // A row needing one written after it, in its own table: tried again
+        // with that table's foreign key checked at the end instead.
+        if (stmt.check === 'data' && await retriedWithKeyDeferred(client, guard, stmt.sql, err)) {
+          done.push({ check: stmt.check, issueId: stmt.issueId, sql: stmt.sql })
+          continue
+        }
+        return fail(stmt, err)
       }
     }
     if (unmet.length === pending.length) break
@@ -709,6 +758,14 @@ async function runBatch(
     done.push({ check: stmt.check, issueId: stmt.issueId, sql: stmt.sql, note: 'nothing to revoke: the object is not on the target' })
   }
 
+  try {
+    await guard.finish()
+  } catch (err) {
+    return fail({ check: 'data', issueId: 'data' }, err)
+  }
+  if (guard.warnings.length > 0) result.warnings = [...(result.warnings ?? []), ...guard.warnings]
+  if (guard.notes.length > 0) result.notes = [...(result.notes ?? []), ...guard.notes]
+
   await client.query('COMMIT')
   result.applied.push(...done)
   // An extension the server does not ship can't be had by any fix: it is
@@ -722,7 +779,7 @@ async function runBatch(
     result.errors.push({
       check: stmt.check,
       issueId: stmt.issueId,
-      error: `${errMsg(err)} — not applied: ${why}. The other fixes were.`,
+      error: `${errMsg(err)} — not applied: ${why}. Everything else was applied.`,
     })
   }
   return true
