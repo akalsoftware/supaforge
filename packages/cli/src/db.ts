@@ -56,27 +56,38 @@ export function newPgClient(dbUrl: string, queryTimeoutMs?: number): pg.Client {
 }
 
 /**
+ * Output formats pinned on every connection that reads values as text, as
+ * DBDiff pins them on its own and pg_dump does on its.
+ *
+ * Each server's settings decide how a value prints, and two servers rarely
+ * agree. Supabase sets `extra_float_digits = 0`, which prints a double
+ * rounded to 15 digits, so a fingerprint called two different tables equal.
+ * A snapshot taken under `DateStyle = 'SQL, DMY'` wrote 2 January as
+ * `02/01/2026`, which a restore into an MDY server read as 1 February.
+ * Interval and time zone settings change the text the same way. Pinned, the
+ * text is the same whichever server printed it, and each type reads it back
+ * exactly.
+ *
+ * DateStyle and TimeZone also decide how a date written without a zone or in
+ * day/month order is *read*, so SQL the user wrote — a migration, a schema
+ * file — runs on connections of its own (pgQueryAsWritten), under the
+ * database's own settings, as psql would run it.
+ */
+export const PINNED_OUTPUT = "SET extra_float_digits = 3; SET bytea_output = hex; SET DateStyle = 'ISO, MDY'; "
+  + "SET IntervalStyle = postgres; SET TimeZone = 'UTC'"
+
+/**
  * The same for a pool: its own `'error'` event (an idle client dropped), and
  * every client's while it is checked out, when the pool's listener is off.
+ * `pinned`: set PINNED_OUTPUT on each connection.
  */
-/**
- * Output formats pinned on every pooled connection.
- *
- * Supabase sets `extra_float_digits = 0`, which prints a double rounded to 15
- * digits: 0.30000000000000004 and 0.3 print alike, so a fingerprint comparing
- * them as text called two different tables equal and skipped them. Both
- * settings change only how values print, never how SQL is read, so nothing
- * run on these connections means anything different. pg_dump sets the same.
- */
-export const PINNED_OUTPUT = 'SET extra_float_digits = 3; SET bytea_output = hex'
-
-export function newPgPool(config: pg.PoolConfig): pg.Pool {
+export function newPgPool(config: pg.PoolConfig, pinned = true): pg.Pool {
   const pool = new pg.Pool(config)
   pool.on('error', () => undefined)
   pool.on('connect', client => {
     client.on('error', () => undefined)
     // Queued ahead of the first query the pool hands this client to.
-    client.query(PINNED_OUTPUT).catch(() => undefined)
+    if (pinned) client.query(PINNED_OUTPUT).catch(() => undefined)
   })
   return pool
 }
@@ -247,8 +258,27 @@ export async function inRolledBackTransaction<T>(
 }
 
 /** Close every pool this process opened. Safe to call more than once. */
+/** Pools for SQL the user wrote, under each database's own settings — see PINNED_OUTPUT. */
+const asWritten = new Map<string, pg.Pool>()
+
+/**
+ * Run SQL the user wrote — a migration, a schema file — as psql would: under
+ * the database's own DateStyle and TimeZone, which decide how its date
+ * literals are read, rather than the pinned output formats.
+ */
+export const pgQueryAsWritten: QueryFn = async (dbUrl, sql, params) => {
+  let pool = asWritten.get(dbUrl)
+  if (!pool) {
+    pool = newPgPool({ ...pgClientConfig(dbUrl), max: POOL_MAX, allowExitOnIdle: true }, false)
+    asWritten.set(dbUrl, pool)
+  }
+  const { rows } = await pool.query(sql, params)
+  return rows
+}
+
 export async function closePgPools(): Promise<void> {
-  const open = [...pools.values()]
+  const open = [...pools.values(), ...asWritten.values()]
   pools.clear()
+  asWritten.clear()
   await Promise.all(open.map(pool => pool.end().catch(() => undefined)))
 }

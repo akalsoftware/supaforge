@@ -71,10 +71,19 @@ export async function sampleInto(psql: string, fromUrl: string, intoUrl: string,
   return { sampled, unchecked }
 }
 
+/** `PGOPTIONS` with the text formats pinned, after anything already set there. */
+export function withPinnedFormats(options: string | undefined): string {
+  const pinned = '-c DateStyle=ISO,MDY -c IntervalStyle=postgres -c extra_float_digits=3 -c bytea_output=hex'
+  return options ? `${options} ${pinned}` : pinned
+}
+
 function pipeCopy(psql: string, fromUrl: string, intoUrl: string, out: string, into: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const reading = pgToolConnection(fromUrl)
-    const writing = pgToolConnection(intoUrl)
+    // The rows travel as text: both ends print and read it in one format, or
+    // a date printed DMY by a target set that way was read MDY by the copy,
+    // a new database on the server's defaults. (See PINNED_OUTPUT.)
+    const reading = pgToolConnection(fromUrl, { ...process.env, PGOPTIONS: withPinnedFormats(process.env.PGOPTIONS) })
+    const writing = pgToolConnection(intoUrl, { ...process.env, PGOPTIONS: withPinnedFormats(process.env.PGOPTIONS) })
     const reader = spawn(psql, [reading.url, '-X', '-q', '-v', 'ON_ERROR_STOP=1', '-c', out], { stdio: ['ignore', 'pipe', 'pipe'], env: reading.env })
     const writer = spawn(psql, [writing.url, '-X', '-q', '-v', 'ON_ERROR_STOP=1', '-f', '-'], { stdio: ['pipe', 'pipe', 'pipe'], env: writing.env })
     let stderr = ''

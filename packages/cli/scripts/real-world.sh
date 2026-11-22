@@ -155,7 +155,12 @@ state(){ local sc; sc=$(schemas "$1"); [ -n "$sc" ] || { echo '{}'; return; }
     | jq -S 'del(.meta.server_version_num) | walk(if type == "object" and has("position") then del(.position) else . end)'; }
 rows(){ q "$1" -c "SELECT format('%I.%I', n.nspname, c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE c.relkind = 'r' AND NOT c.relispartition AND n.nspname = ANY (ARRAY[$(schemas "$1")]) ORDER BY 1" \
-  | while read -r t; do echo "$t $(q "$1" -c "SELECT count(*) || ' ' || coalesce(md5(string_agg(x::text, '|' ORDER BY x::text)), '-') FROM $t x")"; done; }
+  | while read -r t; do echo "$t $(PGOPTIONS="$PINNED" q "$1" -c "SELECT count(*) || ' ' || coalesce(md5(string_agg(ROW(x.*)::text, '|' ORDER BY ROW(x.*)::text COLLATE \"C\")), '-') FROM $t x")"; done; }
+# Rows compared as text, printed alike on both servers (Supabase ships
+# extra_float_digits = 0, which rounds a double to 15 digits on both sides and
+# hid a sync that rounded it), ordered by bytes whatever each side's collation,
+# and read through ROW(x.*), which a column named x can't stand in for.
+PINNED='-c DateStyle=ISO,MDY -c IntervalStyle=postgres -c TimeZone=UTC -c extra_float_digits=3 -c bytea_output=hex'
 # Not counted: RLS coverage (the datasets have no policies), and the note that
 # a Supabase platform extension stays in Supabase's schema, which is reported
 # by design with nothing to apply.

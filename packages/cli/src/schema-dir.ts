@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import { readdir, readFile } from 'node:fs/promises'
 import { join, relative } from 'node:path'
-import { pgQuery } from './db'
+import { pgQuery, pgQueryAsWritten } from './db'
 import { SUPABASE_PLATFORM_SCHEMAS } from './defaults'
 
 import { describeMissingPgDump, getServerMajorVersion, resolvePgDumpPath } from './pg-tools'
@@ -96,7 +96,8 @@ async function loadStatements(url: string, files: Array<{ path: string; name: st
     const failed: typeof pending = []
     for (const p of pending) {
       try {
-        await pgQuery(url, p.sql)
+        // The user's SQL, under the database's own settings — see PINNED_OUTPUT.
+        await pgQueryAsWritten(url, p.sql)
       } catch (err) {
         failed.push({ ...p, error: errMsg(err) })
       }

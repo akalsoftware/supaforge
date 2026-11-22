@@ -146,7 +146,9 @@ cd "$SF"
 if wants scenarios || wants cross-version; then
   mkdir -p "$WORK/pgbin"
   for t in pg_dump pg_restore psql; do
-    printf '#!/bin/sh\nexec %s run --rm -i --network=host -v /tmp:/tmp docker.io/library/postgres:18 %s "$@"\n' "$RT" "$t" > "$WORK/pgbin/$t"
+    # libpq's environment goes through as well: SupaForge passes the password
+    # and session options (PGOPTIONS) to the tools that way, not on the command line.
+    printf '#!/bin/sh\nexec %s run --rm -i --network=host -v /tmp:/tmp -e PGPASSWORD -e PGOPTIONS -e PGSSLMODE docker.io/library/postgres:18 %s "$@"\n' "$RT" "$t" > "$WORK/pgbin/$t"
     chmod +x "$WORK/pgbin/$t"
   done
   export SUPAFORGE_PG_BIN="$WORK/pgbin"

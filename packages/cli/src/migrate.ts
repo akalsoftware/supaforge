@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { QueryFn } from './db.js'
-import { pgQuery } from './db.js'
+import { pgQuery, pgQueryAsWritten } from './db.js'
 import type { LocalMigration } from './checks/migrations.js'
 import { readLocalMigrations } from './checks/migrations.js'
 import type { ReadDirFn } from './checks/migrations.js'
@@ -132,7 +132,8 @@ export interface RunMigrationResult {
 export async function runMigration(
   dbUrl: string,
   migration: PendingMigration,
-  queryFn: QueryFn = pgQuery,
+  // The user's SQL, under the database's own settings — see PINNED_OUTPUT.
+  queryFn: QueryFn = pgQueryAsWritten,
   readFileFn: ReadFileFn = defaultReadFile,
 ): Promise<RunMigrationResult> {
   const sql = await readFileFn(migration.path)
