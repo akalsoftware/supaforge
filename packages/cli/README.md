@@ -146,6 +146,13 @@ Useful `diff` flags:
   column, deleting or truncating rows, and removing an RLS policy are reported
   but skipped until you add `--allow-destructive`. `migrate run` uses the same
   gate.
+- **Roles and grants.** What the target grants a role the source doesn't have
+  is left alone, since the source says nothing about it. Syncing plain
+  PostgreSQL into a Supabase project keeps the Data API roles' access.
+  Grants to `anon`, `authenticated` or `service_role` are skipped on a target
+  without them. Roles belong to the whole server, not one database, so a role
+  only the target has is dropped only with `--allow-destructive`, and one
+  that can log in is never dropped for you.
 - **Dependency order.** Fixes run in dependency order: functions before the
   triggers that call them, columns before their indexes, drops last. A changed
   object that has to be dropped and recreated is a single fix.

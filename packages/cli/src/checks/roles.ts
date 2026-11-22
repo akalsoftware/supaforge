@@ -74,6 +74,9 @@ export const PLATFORM_ROLES = [
  */
 const API_ROLES = ['anon', 'authenticated', 'service_role']
 
+/** Every role on the server, to tell a grant to a role one side lacks from one that differs. */
+const ROLE_NAMES_SQL = 'SELECT rolname FROM pg_roles'
+
 const quoted = (names: string[]) => names.map(n => `'${n.replace(/'/g, "''")}'`).join(', ')
 
 /**
@@ -391,6 +394,7 @@ export class RolesCheck extends Check {
       sourceVersion, targetVersion, sourceRelations, targetRelations, targetDefaults,
       sourceRoutineGrants, targetRoutineGrants, sourceRoutines, targetRoutines,
       sourceSchemaGrants, targetSchemaGrants, sourceSchemas,
+      sourceRoleNames, targetRoleNames,
     ] = await Promise.all([
       this.queryFn(ctx.source.dbUrl, ROLES_SQL) as unknown as Promise<PgRole[]>,
       this.queryFn(ctx.target.dbUrl, ROLES_SQL) as unknown as Promise<PgRole[]>,
@@ -410,6 +414,8 @@ export class RolesCheck extends Check {
       this.queryFn(ctx.source.dbUrl, schemaGrantsSql(ignore)) as unknown as Promise<RoleGrant[]>,
       this.queryFn(ctx.target.dbUrl, schemaGrantsSql(ignore)) as unknown as Promise<RoleGrant[]>,
       this.queryFn(ctx.source.dbUrl, schemasSql(ignore)) as unknown as Promise<Relation[]>,
+      this.queryFn(ctx.source.dbUrl, ROLE_NAMES_SQL) as unknown as Promise<Array<{ rolname: string }>>,
+      this.queryFn(ctx.target.dbUrl, ROLE_NAMES_SQL) as unknown as Promise<Array<{ rolname: string }>>,
     ])
     const sourceObjects = [...(sourceRelations ?? []), ...(sourceRoutines ?? []), ...(sourceSchemas ?? [])]
     const targetObjects = [...(targetRelations ?? []), ...(targetRoutines ?? [])]
@@ -430,6 +436,10 @@ export class RolesCheck extends Check {
         [...sourceAll, ...(sourceColumns ?? [])].filter(g => comparable(g) && !byDefault(g)),
         [...targetAll, ...(targetColumns ?? [])].filter(comparable),
         absentOn(targetRoles, sourceRoles),
+        // Every server has roles; none read means unknown, not none.
+        sourceRoleNames?.length && targetRoleNames?.length
+          ? { source: new Set(sourceRoleNames.map(r => r.rolname)), target: new Set(targetRoleNames.map(r => r.rolname)) }
+          : undefined,
       ),
       ...defaultGrantsToRevoke(
         sourceObjects, targetObjects,
@@ -507,6 +517,12 @@ export function diffRoles(source: PgRole[], target: PgRole[]): DriftIssue[] {
           up: `DROP ROLE IF EXISTS ${quoteName(name)};`,
           down: `CREATE ROLE ${quoteName(name)} ${roleAttrs(tr)};`,
         },
+        // Roles belong to the whole server, not this database, and a login
+        // role is a credential something may be signing in with — another
+        // database on the server, another service. Nothing here can see who.
+        ...(tr.rolcanlogin
+          ? { manualOnly: `"${name}" can log in, and roles are shared by every database on the server, so it may be in use outside this one; drop it by hand once nothing signs in with it` }
+          : {}),
       })
     }
   }
@@ -658,6 +674,52 @@ function grantsToMissingRoles(grants: RoleGrant[]): DriftIssue[] {
 }
 
 /**
+ * Grants to a role one side does not have at all, one finding per role and
+ * side, reported and never applied.
+ *
+ * - **The source lacks the role.** It says nothing about what the role may
+ *   do, so nothing the target grants it is drift. Revoking them all was the
+ *   fix: syncing plain PostgreSQL into a Supabase project revoked `anon`,
+ *   `authenticated` and `service_role`'s USAGE on `public` and every table
+ *   grant, which takes the project's Data API offline.
+ * - **The target lacks a role this sync can't create.** The API roles are
+ *   Supabase's; a plain PostgreSQL target has none, and a GRANT to one fails
+ *   on every apply.
+ *
+ * Roles the source has and the target doesn't otherwise are created by the
+ * "Missing role" fix, and their grants go with them (grantsToMissingRoles).
+ */
+function grantsToAbsentRoles(grants: RoleGrant[], side: 'source' | 'target'): DriftIssue[] {
+  const byRole = new Map<string, RoleGrant[]>()
+  for (const g of grants) byRole.set(g.grantee, [...(byRole.get(g.grantee) ?? []), g])
+  return [...byRole].map(([role, gs]) => {
+    const objects = new Set(gs.map(g => describeObject(g))).size
+    const what = `${gs.length} privilege${gs.length === 1 ? '' : 's'} on ${objects} object${objects === 1 ? '' : 's'}`
+    return side === 'source'
+      ? {
+          id: `roles-grant-unmatched-${role}`,
+          check: 'roles' as const,
+          severity: 'info' as const,
+          title: `Grants to ${role}, a role the source does not have: ${what}`,
+          description: `The target grants ${what} to "${role}". The source has no such role, so it says nothing about `
+            + 'what the role may do, and these are left as they are.',
+          targetValue: gs,
+          manualOnly: `"${role}" does not exist on the source, so its grants on the target are left as they are; revoke any it should not have by hand`,
+        }
+      : {
+          id: `roles-grant-missing-role-${role}`,
+          check: 'roles' as const,
+          severity: 'info' as const,
+          title: `Grants to ${role}, a Supabase role the target does not have: ${what}`,
+          description: `The source grants ${what} to "${role}", one of the roles Supabase's Data API uses. The target is not `
+            + 'a Supabase project and has no such role, so there is nothing to grant.',
+          sourceValue: gs,
+          manualOnly: `"${role}" is a Supabase role, and the target does not have it`,
+        }
+  })
+}
+
+/**
  * Grants on the target that differ from the source's.
  *
  * Missing and extra grants are one finding per role, table (or column) and
@@ -669,14 +731,20 @@ export function diffGrants(
   source: RoleGrant[],
   target: RoleGrant[],
   missingRoles: ReadonlySet<string> = new Set(),
+  /** Every role each side has, platform and API roles included; unknown when not given. */
+  roles?: { source: ReadonlySet<string>; target: ReadonlySet<string> },
 ): DriftIssue[] {
   const issues: DriftIssue[] = []
   const sourceMap = new Map(source.map(g => [grantKey(g), g]))
   const targetMap = new Map(target.map(g => [grantKey(g), g]))
+  const absentFrom = (side: ReadonlySet<string> | undefined, g: RoleGrant) =>
+    side !== undefined && g.grantee !== 'PUBLIC' && !side.has(g.grantee)
 
   const missing = [...sourceMap].filter(([key]) => !targetMap.has(key)).map(([, g]) => g)
+  const uncreatable = (g: RoleGrant) => API_ROLES.includes(g.grantee) && absentFrom(roles?.target, g)
+  issues.push(...grantsToAbsentRoles(missing.filter(uncreatable), 'target'))
   issues.push(...grantsToMissingRoles(missing.filter(g => missingRoles.has(g.grantee))))
-  for (const gs of grouped(missing.filter(g => !missingRoles.has(g.grantee)))) {
+  for (const gs of grouped(missing.filter(g => !missingRoles.has(g.grantee) && !uncreatable(g)))) {
     const plural = gs.length > 1 ? 's' : ''
     issues.push({
       id: `roles-grant-missing-${groupKey(gs)}`,
@@ -716,7 +784,8 @@ export function diffGrants(
   }
 
   const extra = [...targetMap].filter(([key]) => !sourceMap.has(key)).map(([, g]) => g)
-  for (const gs of grouped(extra)) {
+  issues.push(...grantsToAbsentRoles(extra.filter(g => absentFrom(roles?.source, g)), 'source'))
+  for (const gs of grouped(extra.filter(g => !absentFrom(roles?.source, g)))) {
     const plural = gs.length > 1 ? 's' : ''
     issues.push({
       id: `roles-grant-extra-${groupKey(gs)}`,
