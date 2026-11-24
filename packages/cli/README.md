@@ -153,6 +153,11 @@ Useful `diff` flags:
   without them. Roles belong to the whole server, not one database, so a role
   only the target has is dropped only with `--allow-destructive`, and one
   that can log in is never dropped for you.
+- **`--tables` scope.** Only the selected tables' fixes run, with what they
+  need: a type a column uses, a function a trigger calls, and grants and
+  comments on those. A fix that touches a table `--tables` leaves out, or
+  touches none and isn't needed, such as a new unrelated function or default
+  privileges, is skipped with the reason.
 - **Dependency order.** Fixes run in dependency order: functions before the
   triggers that call them, columns before their indexes, drops last. A changed
   object that has to be dropped and recreated is a single fix.
