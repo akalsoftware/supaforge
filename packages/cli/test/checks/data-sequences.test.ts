@@ -1,3 +1,5 @@
+import { counterIssues, counterFixSql } from '../../src/checks/data-sequences.js'
+import { matchesGlob } from '../../src/utils/strings.js'
 import { describe, it, expect } from 'vitest'
 import { sequenceFixSql, sequenceIssues } from '../../src/checks/data-sequences.js'
 import { planWork } from '../../src/promote.js'
@@ -69,5 +71,41 @@ describe('the sequence fix in a plan', () => {
     expect(picked).toEqual(['data-insert-2', 'data-sequence-plans'])
     const none = planWork(scan(['data-insert-1']), { only: ['schema-*'] }).sqlStatements
     expect(none).toEqual([])
+  })
+})
+
+describe('counterIssues: sequences of their own', () => {
+  const counter = (name: string, last: string | null, next: string, schema = 'public', ascending = true) => ({ schema, name, last, next, ascending })
+  const run = (source: unknown[], target: unknown[], configured: string[] = []) =>
+    counterIssues('source', 'target', configured, ['auth', 'storage'], async (url: string) => (url === 'source' ? source : target) as never, matchesGlob)
+
+  it('moves a named counter the source has counted past, and only reports one not named', async () => {
+    const issues = await run(
+      [counter('invoice_no', '1039', '1040'), counter('ticket_no', '7', '8')],
+      [counter('invoice_no', null, '1000'), counter('ticket_no', null, '1')],
+      ['invoice_*'],
+    )
+    expect(issues.map(i => [i.id, i.severity, Boolean(i.sql), Boolean(i.manualOnly)])).toEqual([
+      ['data-counter-public.invoice_no', 'warning', true, false],
+      ['data-counter-public.ticket_no', 'info', false, true],
+    ])
+    expect(issues[0].sql!.up).toBe(counterFixSql('public.invoice_no', '1039'))
+  })
+
+  it('says nothing of a counter the target is level with or past, one the source never used, one counting down, or one in an ignored schema', async () => {
+    const issues = await run(
+      [counter('level', '9', '10'), counter('unused', null, '1'), counter('down', '5', '4', 'public', false), counter('s', '9', '10', 'auth')],
+      [counter('level', '9', '10'), counter('unused', null, '1'), counter('down', null, '9', 'public', false), counter('s', null, '1', 'auth')],
+      ['*'],
+    )
+    expect(issues).toEqual([])
+  })
+
+  it('leaves one the target lacks to the schema check', async () => {
+    expect(await run([counter('new_no', '5', '6')], [], ['*'])).toEqual([])
+  })
+
+  it('the fix only ever moves it forward', () => {
+    expect(counterFixSql('public.invoice_no', '1039')).toMatch(/AND 1039 >= coalesce\(pg_sequence_last_value\(q\.seqrelid\) \+ q\.seqincrement, q\.seqstart\);$/)
   })
 })

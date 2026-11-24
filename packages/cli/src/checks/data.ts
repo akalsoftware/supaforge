@@ -6,7 +6,8 @@ import type { QueryFn } from '../db'
 import { pgQuery } from '../db'
 import { Check, CheckSkipped, type CheckContext } from './base'
 import { applyTableFilter } from '../utils/table-filter'
-import { sequenceIssues } from './data-sequences'
+import { counterIssues, sequenceIssues } from './data-sequences'
+import { matchesGlob } from '../utils/strings'
 
 export type RunDbDiffFn = (options: DbDiffOptions) => ReturnType<typeof runDbDiff>
 
@@ -54,7 +55,11 @@ export class DataCheck extends Check {
 
     // Every configured table, changed or not: a target synced before this
     // check existed has its rows right and its sequences behind them.
-    const sequences = await sequenceIssues(ctx.source.dbUrl, ctx.target.dbUrl, tables, this.queryFn)
+    const sequences = [
+      ...await sequenceIssues(ctx.source.dbUrl, ctx.target.dbUrl, tables, this.queryFn),
+      ...await counterIssues(ctx.source.dbUrl, ctx.target.dbUrl, ctx.config.checks?.data?.sequences ?? [],
+        ctx.config.ignoreSchemas ?? DEFAULT_IGNORE_SCHEMAS, this.queryFn, matchesGlob),
+    ]
     if (changed.length === 0) return sequences
 
     try {

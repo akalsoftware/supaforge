@@ -23,20 +23,25 @@ interface ColumnSequence {
 }
 
 /**
- * The sequence a serial or identity column owns, joined from the column:
- * what pg_get_serial_sequence() reads, without its error for a table or
- * column that isn't there — a table the sync is about to create is the usual
- * case on the target, and inside a prepared statement no CASE keeps the
- * function from being called.
+ * The sequence each column of `table` draws its ids from: one a serial or
+ * identity column owns (what pg_get_serial_sequence() reads, without its
+ * error for a table that isn't there — a table the sync is about to create is
+ * the usual case on the target), or one its default calls, `DEFAULT
+ * nextval('order_no')`, which no column owns and was left behind the synced
+ * rows. A sequence several columns share is moved past each one's rows in
+ * turn, only ever forward, so it ends past them all.
  */
-const OWNED = (table: string) => `pg_depend d
-    JOIN pg_sequence q ON q.seqrelid = d.objid
-    JOIN pg_attribute a ON a.attrelid = d.refobjid AND a.attnum = d.refobjsubid AND NOT a.attisdropped
-   WHERE d.classid = 'pg_class'::regclass AND d.refclassid = 'pg_class'::regclass AND d.deptype IN ('a', 'i')
-     AND d.refobjid = to_regclass(${table})`
+const OWNED = (table: string) => `(SELECT d.objid AS seqrelid, d.refobjid AS relid, d.refobjsubid AS attnum FROM pg_depend d
+           WHERE d.classid = 'pg_class'::regclass AND d.refclassid = 'pg_class'::regclass AND d.deptype IN ('a', 'i')
+          UNION
+          SELECT d.refobjid, ad.adrelid, ad.adnum FROM pg_depend d JOIN pg_attrdef ad ON ad.oid = d.objid
+           WHERE d.classid = 'pg_attrdef'::regclass AND d.refclassid = 'pg_class'::regclass AND d.deptype = 'n') s
+    JOIN pg_sequence q ON q.seqrelid = s.seqrelid
+    JOIN pg_attribute a ON a.attrelid = s.relid AND a.attnum = s.attnum AND NOT a.attisdropped
+   WHERE s.relid = to_regclass(${table})`
 
 /** Each serial or identity column of `table`. */
-const SOURCE_SQL = (table: string) => `SELECT a.attname AS col FROM ${OWNED(quoteLiteral(quoteIdent(table)))} ORDER BY a.attnum`
+const SOURCE_SQL = (table: string) => `SELECT DISTINCT a.attname AS col, a.attnum FROM ${OWNED(quoteLiteral(quoteIdent(table)))} ORDER BY a.attnum`
 
 /**
  * The next value the target's sequence for column $2 of table $1 would hand
@@ -93,6 +98,73 @@ export async function sequenceIssues(
       description: `The ids synced into ${table} reach past what its sequence would hand out next: ${behind.join(', ')}. `
         + 'The next insert would fail with a duplicate key, so the sequence is moved past them after the rows are written.',
       sql: { up: fixes.join('\n'), down: '' },
+    })
+  }
+  return issues
+}
+
+/**
+ * Sequences of their own: no column owns one or draws its default from it,
+ * and no extension does. An invoice or ticket number is the usual case, kept
+ * by the app calling nextval() itself, so no row says where it should be.
+ */
+const COUNTERS_SQL = `
+  SELECT n.nspname AS schema, c.relname AS name, pg_sequence_last_value(c.oid)::text AS last,
+         (coalesce(pg_sequence_last_value(c.oid) + q.seqincrement, q.seqstart))::text AS next,
+         q.seqincrement > 0 AS ascending
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    JOIN pg_sequence q ON q.seqrelid = c.oid
+   WHERE c.relkind = 'S' AND n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\\_%'
+     AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype IN ('a', 'i', 'e'))
+     AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_attrdef'::regclass AND d.refobjid = c.oid)`
+
+interface Counter { schema: string; name: string; last: string | null; next: string; ascending: boolean }
+
+/** Moves the target's counter to the source's last value, if that is at or past what it would hand out next. */
+export function counterFixSql(qualified: string, last: string): string {
+  return `SELECT setval(q.seqrelid, ${BigInt(last)}) FROM pg_sequence q WHERE q.seqrelid = to_regclass(${quoteLiteral(qualified)})`
+    + ` AND q.seqincrement > 0 AND ${BigInt(last)} >= coalesce(pg_sequence_last_value(q.seqrelid) + q.seqincrement, q.seqstart);`
+}
+
+/**
+ * Sequences of their own that the source has counted past the target.
+ * Nothing in the rows says where one belongs, and moving a counter takes
+ * numbers the target will never hand out — an invoice series gets a gap — so
+ * it moves only when `checks.data.sequences` names it; otherwise it is
+ * reported. Only ever forward.
+ */
+export async function counterIssues(
+  sourceUrl: string,
+  targetUrl: string,
+  configured: string[],
+  ignoreSchemas: string[],
+  queryFn: QueryFn,
+  matches: (name: string, pattern: string) => boolean,
+): Promise<DriftIssue[]> {
+  const [source, target] = await Promise.all([
+    queryFn(sourceUrl, COUNTERS_SQL) as unknown as Promise<Counter[]>,
+    queryFn(targetUrl, COUNTERS_SQL) as unknown as Promise<Counter[]>,
+  ])
+  const onTarget = new Map(target.map(t => [`${t.schema}.${t.name}`, t]))
+  const issues: DriftIssue[] = []
+  for (const s of source) {
+    if (ignoreSchemas.some(p => matches(s.schema, p)) || !s.ascending || s.last === null) continue
+    const qualified = `${s.schema}.${s.name}`
+    const t = onTarget.get(qualified)
+    // One the target lacks is the schema check's to create, with the source's state.
+    if (!t || !t.ascending || BigInt(t.next) > BigInt(s.last)) continue
+    const named = configured.some(p => matches(qualified, p) || (s.schema === 'public' && matches(s.name, p)))
+    issues.push({
+      id: `data-counter-${qualified}`,
+      check: 'data',
+      severity: named ? 'warning' : 'info',
+      title: `Sequence ${qualified} behind the source's`,
+      description: `The source's ${qualified} has reached ${s.last}; the target's would hand out ${t.next} next. `
+        + 'No column takes its ids from it, so the rows say nothing about where it belongs.',
+      ...(named
+        ? { sql: { up: counterFixSql(qualified, s.last), down: '' } }
+        : { manualOnly: `A sequence of its own, moved only when named: add "${qualified}" to checks.data.sequences to move the target's forward to the source's.` }),
     })
   }
   return issues
