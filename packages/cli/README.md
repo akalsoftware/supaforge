@@ -406,13 +406,16 @@ The server exposes these tools:
 | --- | --- | --- |
 | `list_environments` | The environments in the config, without their credentials | Read-only |
 | `diff` | Every difference, with the plan `sync` would run | Read-only |
-| `get_check_result` | One check's result from the last `diff` or `sync` | Read-only |
+| `get_check_result` | One check's result from the last `diff` or `sync`, or with `issueId` one finding whole | Read-only |
 | `sync` | Runs the plan on the target; `prove: true` rehearses it on a copy first | Destructive |
 | `create_migration` | Writes the drift as a migration file, as `migrate create` does | Writes files |
 | `take_snapshot` | Snapshots an environment to local files | Writes files |
 
 `diff` and `sync` take the same arguments, so the plan an agent shows you is
-the plan that runs. Fixes that drop tables or columns are held back unless
+the plan that runs. Results are sized for an agent to read: long SQL, such as
+a batch of rows, keeps its start and says how much is left out, and a very
+large result shortens its lists too, saying so. Ids, titles and counts are
+never cut. Fixes that drop tables or columns are held back unless
 `allowDestructive` is set.
 
 It reads `supaforge.config.json` in the directory given by `--project` (or the
