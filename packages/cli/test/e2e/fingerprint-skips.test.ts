@@ -47,7 +47,7 @@ describeE2E('e2e: tables the fingerprint must not skip', () => {
     const issues = JSON.parse(plan.stdout).checks
       .flatMap((c: { issues: Array<{ title: string }> }) => c.issues)
       .map((i: { title: string }) => i.title)
-    expect(issues).toContain('Modified row in notes')
+    expect(issues).toContain('1 row modified in public.notes')
 
     await h.cli(['diff', '--check', 'data', '--apply'], { cwd: ws })
     const rows = (role: 'source' | 'target') => h.sql(role, 'SELECT string_agg(v::text, \',\' ORDER BY id) FROM public.notes')

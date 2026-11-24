@@ -136,7 +136,7 @@ describe('RolesCheck', () => {
     expect(grantIssue!.sql?.up).toContain('REVOKE INSERT')
   })
 
-  it('runs all 20 queries (roles, role names, grants, column grants, routine grants, schema grants, version, tables and routines per side; the source\'s schemas; the target\'s default grants)', async () => {
+  it('runs all 21 queries (roles, role names, the target\'s own role, grants, column grants, routine grants, schema grants, version, tables and routines per side; the source\'s schemas; the target\'s default grants)', async () => {
     const calls: string[] = []
     const queryFn: QueryFn = async (_dbUrl, sql) => {
       calls.push(sql)
@@ -144,7 +144,7 @@ describe('RolesCheck', () => {
     }
     const check = new RolesCheck(queryFn)
     await check.scan(mockContext())
-    expect(calls).toHaveLength(20)
+    expect(calls).toHaveLength(21)
     expect(calls.filter(s => s === 'SELECT rolname FROM pg_roles')).toHaveLength(2)
     expect(calls.filter(s => s.includes('n.nspacl'))).toHaveLength(2)
     expect(calls.filter(s => s.includes('proacl'))).toHaveLength(2)
@@ -154,6 +154,53 @@ describe('RolesCheck', () => {
     expect(roleQueries).toHaveLength(2)
     expect(grantQueries).toHaveLength(2)
     expect(calls.filter(s => s.includes('pg_default_acl'))).toHaveLength(1)
+  })
+
+  it('asks the source for its default privileges as the role the target is reached as', async () => {
+    const calls: Array<{ dbUrl: string; sql: string; params?: unknown[] }> = []
+    const queryFn: QueryFn = async (dbUrl, sql, params) => {
+      calls.push({ dbUrl, sql, params })
+      if (sql === 'SELECT current_user AS rolname') return [{ rolname: 'postgres' }]
+      return []
+    }
+    await new RolesCheck(queryFn).scan(mockContext())
+    const asked = calls.filter(c => c.sql.includes('pg_default_acl') && c.params)
+    expect(asked).toHaveLength(1)
+    expect(asked[0].dbUrl).toContain('source')
+    expect(asked[0].params).toEqual(['postgres'])
+  })
+
+  describe('a table created in the same apply as the default privileges it takes', () => {
+    // The source grants anon nothing on public.secrets, though its default
+    // privileges for postgres would; the target has neither the table nor
+    // the defaults yet, and the schema fix brings both.
+    const scan = (targetRoles: string[]) => {
+      const queryFn: QueryFn = async (dbUrl, sql, params) => {
+        const source = dbUrl.includes('source')
+        if (sql === 'SELECT current_user AS rolname') return [{ rolname: 'postgres' }]
+        if (sql === 'SELECT rolname FROM pg_roles') return (source ? ['postgres', 'anon'] : targetRoles).map(rolname => ({ rolname }))
+        if (sql.includes('pg_default_acl') && params) {
+          return source ? [{ object_kind: 'table', table_schema: 'public', grantee: 'anon', privilege_type: 'SELECT', is_grantable: false }] : []
+        }
+        if (source && sql.includes("CASE c.relkind WHEN 'S' THEN 'sequence' ELSE 'table' END AS object_kind") && !sql.includes('relacl')) {
+          return [{ table_schema: 'public', table_name: 'secrets', object_kind: 'table' }]
+        }
+        return []
+      }
+      return new RolesCheck(queryFn).scan(mockContext())
+    }
+
+    it('revokes what those defaults give and the source does not', async () => {
+      const issues = await scan(['postgres', 'anon'])
+      const revoke = issues.find(i => i.id === 'roles-grant-default-anon.public.secrets')
+      expect(revoke?.sql?.up).toBe('REVOKE SELECT ON "public"."secrets" FROM "anon";')
+      expect(revoke?.severity).toBe('critical')
+    })
+
+    it('says nothing of a role the target does not have, whose REVOKE would fail the apply', async () => {
+      const issues = await scan(['postgres'])
+      expect(issues.filter(i => i.id.startsWith('roles-grant-default-'))).toEqual([])
+    })
   })
 })
 

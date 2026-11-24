@@ -21,6 +21,7 @@ import { Preflight } from '../preflight.js'
 import type { SupaForgeConfig } from '../types/config.js'
 import { redactUrls, describeFailure } from '../utils/error.js'
 import { openSchemaDir } from '../schema-dir.js'
+import { printJson } from '../utils/json-stream.js'
 
 
 /** The source environment a --source-dir run compares from. */
@@ -586,7 +587,7 @@ export default class Diff extends BaseCommand {
         process.stderr.write(line + '\n')
       }
       const summary = formatCiSummary(result)
-      process.stdout.write(JSON.stringify(summary, null, 2) + '\n')
+      printJson(summary)
       const exitCode = computeCiExitCode(result, failOn, {
         failOnPosture: flags['fail-on-posture'],
       })
@@ -715,7 +716,7 @@ export default class Diff extends BaseCommand {
       process.stderr.write(`::error title=Diff aborted::${failures.join('; ')}\n`)
       // The summary's usual shape, so a workflow reading the artifact needs no
       // special case: nothing compared, and the reason in `errors`.
-      process.stdout.write(JSON.stringify({
+      printJson({
         timestamp: new Date().toISOString(),
         error: message,
         score: null,
@@ -727,7 +728,7 @@ export default class Diff extends BaseCommand {
         criticalIssues: [],
         warningIssues: [],
         preflight: report.checks.map(stripError),
-      }, null, 2) + '\n')
+      })
       this.exit(2)
     }
     if (flags.json) {

@@ -153,6 +153,11 @@ Useful `diff` flags:
   without them. Roles belong to the whole server, not one database, so a role
   only the target has is dropped only with `--allow-destructive`, and one
   that can log in is never dropped for you.
+- **`--tables` scope.** Only the selected tables' fixes run, with what they
+  need: a type a column uses, a function a trigger calls, and grants and
+  comments on those. A fix that touches a table `--tables` leaves out, or
+  touches none and isn't needed, such as a new unrelated function or default
+  privileges, is skipped with the reason.
 - **Dependency order.** Fixes run in dependency order: functions before the
   triggers that call them, columns before their indexes, drops last. A changed
   object that has to be dropped and recreated is a single fix.
@@ -172,6 +177,12 @@ Useful `diff` flags:
   table's foreign key at the end instead, and an orphan still rolls
   everything back. Both need the connecting role to own the table; when it
   doesn't, the triggers fire and the run says so.
+- **Rows in batches.** A table's rows to insert, update or delete are one
+  finding, `data-insert-public.plans`, of up to a thousand rows, sent to the
+  target in one round trip; a table with more continues in
+  `data-insert-public.plans:2` and on. So a large sync is a short report and
+  quick over a slow link, and `--only='data-*-public.plans*'` picks one
+  table's rows.
 - **Sequences follow the rows.** After syncing rows, each serial or identity
   sequence on those tables is moved past the largest id, so the app's next
   insert doesn't collide with a synced row. A sequence is only ever moved
@@ -413,13 +424,16 @@ The server exposes these tools:
 | --- | --- | --- |
 | `list_environments` | The environments in the config, without their credentials | Read-only |
 | `diff` | Every difference, with the plan `sync` would run | Read-only |
-| `get_check_result` | One check's result from the last `diff` or `sync` | Read-only |
+| `get_check_result` | One check's result from the last `diff` or `sync`, or with `issueId` one finding whole | Read-only |
 | `sync` | Runs the plan on the target; `prove: true` rehearses it on a copy first | Destructive |
 | `create_migration` | Writes the drift as a migration file, as `migrate create` does | Writes files |
 | `take_snapshot` | Snapshots an environment to local files | Writes files |
 
 `diff` and `sync` take the same arguments, so the plan an agent shows you is
-the plan that runs. Fixes that drop tables or columns are held back unless
+the plan that runs. Results are sized for an agent to read: long SQL, such as
+a batch of rows, keeps its start and says how much is left out, and a very
+large result shortens its lists too, saying so. Ids, titles and counts are
+never cut. Fixes that drop tables or columns are held back unless
 `allowDestructive` is set.
 
 It reads `supaforge.config.json` in the directory given by `--project` (or the

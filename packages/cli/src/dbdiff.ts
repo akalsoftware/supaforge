@@ -18,6 +18,7 @@ import { escapeRegex } from './utils/strings'
 import { pairUnits, parseUnits, REPLACING_KINDS, type DbDiffUnit } from './dbdiff-units'
 import { splitSqlStatements } from './utils/sql-split.js'
 import { libpqUrl } from './tls.js'
+import { DOWN_MARKER, readDbDiffStatements, splitStatements, UP_MARKER, withoutLeadingComments } from './dbdiff-output.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -52,6 +53,8 @@ export interface DbDiffOptions {
    * variables (3.0.0-rc.38), which asks for its servers.
    */
   urlsOnCommandLine?: boolean
+  /** Read the output as statements, streamed, rather than as two strings: see DbDiffResult.statements. */
+  statements?: boolean
 }
 
 export interface DbDiffResult {
@@ -62,6 +65,12 @@ export interface DbDiffResult {
    * does not compare, columns or tables it would not take for renames.
    */
   notices?: string[]
+  /**
+   * With `statements` asked for (the data check): each section's statements,
+   * read from the output file as a stream (dbdiff-output.ts), and `up` and
+   * `down` left empty. A data diff can be larger than a string can hold.
+   */
+  statements?: { up: string[]; down: string[] }
 }
 
 /** dbdiff's warnings (`⚠ ...` lines), colour codes stripped. */
@@ -361,6 +370,7 @@ export async function runDbDiff(options: DbDiffOptions): Promise<DbDiffResult> {
       return { up: '', down: '', notices }
     }
 
+    if (options.statements) return { up: '', down: '', notices, statements: await readDbDiffStatements(outputFile) }
     const output = await readFile(outputFile, 'utf8')
     return { ...parseDbDiffOutput(output), notices }
   } catch (err: unknown) {
@@ -390,9 +400,14 @@ export async function runDbDiff(options: DbDiffOptions): Promise<DbDiffResult> {
     // The output file is written before exit — read it if it has real content.
     const fileExists = await access(outputFile).then(() => true, () => false)
     if (fileExists) {
-      const output = await readFile(outputFile, 'utf8')
-      const parsed = parseDbDiffOutput(output)
-      if (parsed.up || parsed.down) return parsed
+      if (options.statements) {
+        const statements = await readDbDiffStatements(outputFile)
+        if (statements.up.length || statements.down.length) return { up: '', down: '', statements }
+      } else {
+        const output = await readFile(outputFile, 'utf8')
+        const parsed = parseDbDiffOutput(output)
+        if (parsed.up || parsed.down) return parsed
+      }
     }
 
     // Timeout / killed process. execFileAsync sets `killed: true` and a SIGTERM
@@ -430,8 +445,6 @@ export async function runDbDiff(options: DbDiffOptions): Promise<DbDiffResult> {
   }
 }
 
-const UP_MARKER = '-- ==================== UP ===================='
-const DOWN_MARKER = '-- ==================== DOWN ===================='
 
 const CREATE_FUNCTION = 'create-function'
 const DROP_FUNCTION = 'drop-function'
@@ -1600,13 +1613,6 @@ function hasBrokenRef(sql: string): boolean {
  * `'a;\nb'` — or a SQL-standard function body, which pg_get_functiondef
  * writes a statement per line, came apart.
  */
-function splitStatements(sql: string): string[] {
-  if (!sql) return []
-  return splitSqlStatements(sql)
-    .map(statement => withoutLeadingComments(statement))
-    .filter(statement => statement.length > 0)
-    .map(statement => `${statement};`)
-}
 
 /**
  * A statement without the `--` lines in front of it.
@@ -1616,9 +1622,6 @@ function splitStatements(sql: string): string[] {
  * labels it could not move came after three lines saying why, so it never
  * reached a finding.
  */
-function withoutLeadingComments(chunk: string): string {
-  return chunk.trim().replace(/^(?:--[^\n]*(?:\n|$)\s*)+/, '').trim()
-}
 
 /**
  * What a finding means and what its fix does, from the kind of statement that

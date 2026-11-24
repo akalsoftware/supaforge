@@ -267,6 +267,26 @@ const DEFAULT_GRANTS_SQL = `
     WHERE d.defaclobjtype = 'f' AND d.defaclnamespace = 0 AND d.defaclrole = current_user::regrole::oid)
 `
 
+/**
+ * The source's default privileges for the role named $1: the role the target
+ * is reached as. The schema fix copies the source's ALTER DEFAULT PRIVILEGES
+ * to the target, and when it does in the same apply as it creates a table,
+ * the table takes those defaults too, though the scan saw none on the
+ * target. A fresh target got Supabase's grants to anon and authenticated on
+ * every new table, and only a second sync took them back.
+ */
+const SOURCE_DEFAULT_GRANTS_SQL = `
+  SELECT CASE d.defaclobjtype WHEN 'S' THEN 'sequence' WHEN 'f' THEN 'function' ELSE 'table' END AS object_kind,
+         n.nspname AS table_schema,
+         CASE WHEN a.grantee = 0 THEN 'PUBLIC' ELSE pg_get_userbyid(a.grantee) END AS grantee,
+         a.privilege_type, a.is_grantable
+  FROM pg_default_acl d
+  JOIN pg_roles r ON r.oid = d.defaclrole AND r.rolname = $1
+  LEFT JOIN pg_namespace n ON n.oid = d.defaclnamespace
+  CROSS JOIN LATERAL aclexplode(d.defaclacl) a
+  WHERE d.defaclobjtype IN ('r', 'S', 'f') AND a.grantee <> d.defaclrole
+`
+
 type Relation = { table_schema: string; table_name: string; object_kind?: ObjectKind; args?: string | null }
 type DefaultGrant = {
   table_schema: string | null; grantee: string; privilege_type: string; is_grantable: boolean
@@ -394,7 +414,7 @@ export class RolesCheck extends Check {
       sourceVersion, targetVersion, sourceRelations, targetRelations, targetDefaults,
       sourceRoutineGrants, targetRoutineGrants, sourceRoutines, targetRoutines,
       sourceSchemaGrants, targetSchemaGrants, sourceSchemas,
-      sourceRoleNames, targetRoleNames,
+      sourceRoleNames, targetRoleNames, targetUser,
     ] = await Promise.all([
       this.queryFn(ctx.source.dbUrl, ROLES_SQL) as unknown as Promise<PgRole[]>,
       this.queryFn(ctx.target.dbUrl, ROLES_SQL) as unknown as Promise<PgRole[]>,
@@ -416,6 +436,7 @@ export class RolesCheck extends Check {
       this.queryFn(ctx.source.dbUrl, schemasSql(ignore)) as unknown as Promise<Relation[]>,
       this.queryFn(ctx.source.dbUrl, ROLE_NAMES_SQL) as unknown as Promise<Array<{ rolname: string }>>,
       this.queryFn(ctx.target.dbUrl, ROLE_NAMES_SQL) as unknown as Promise<Array<{ rolname: string }>>,
+      this.queryFn(ctx.target.dbUrl, 'SELECT current_user AS rolname') as unknown as Promise<Array<{ rolname: string }>>,
     ])
     const sourceObjects = [...(sourceRelations ?? []), ...(sourceRoutines ?? []), ...(sourceSchemas ?? [])]
     const targetObjects = [...(targetRelations ?? []), ...(targetRoutines ?? [])]
@@ -428,6 +449,16 @@ export class RolesCheck extends Check {
     const targetAll = [...(targetGrants ?? []), ...(targetRoutineGrants ?? []), ...(targetSchemaGrants ?? [])]
       .filter(g => !g.object_kind || g.object_kind === 'table' || inSource.has(objectKey(g)))
     const comparable = comparablePrivileges(sourceVersion, targetVersion)
+    // Only ever to revoke: a grant left out because a default would make it
+    // must be one the target already has, or it is simply missing.
+    const role = targetUser?.[0]?.rolname
+    // To a role the target has: the target cannot copy a default naming one
+    // it lacks, and a REVOKE from it would fail the apply.
+    const onTarget = new Set((targetRoleNames ?? []).map(r => r.rolname))
+    const plannedDefaults = role
+      ? ((await this.queryFn(ctx.source.dbUrl, SOURCE_DEFAULT_GRANTS_SQL, [role]) as unknown as DefaultGrant[]) ?? [])
+        .filter(d => d.grantee === 'PUBLIC' || onTarget.has(d.grantee))
+      : []
     const byDefault = this.options.explicit ? () => false : grantedByDefault(targetObjects, targetDefaults ?? [])
 
     return [
@@ -443,7 +474,7 @@ export class RolesCheck extends Check {
       ),
       ...defaultGrantsToRevoke(
         sourceObjects, targetObjects,
-        (targetDefaults ?? []).filter(d => comparable(d as RoleGrant)), sourceAll),
+        [...(targetDefaults ?? []), ...plannedDefaults].filter(d => comparable(d as RoleGrant)), sourceAll),
     ]
   }
 }

@@ -10,7 +10,7 @@ import {
   orderStatements, referencedTables,
   createdPolicies, createsOnlyPolicies,
   createdTriggers, createsOnlyTriggers,
-  sqlSkeleton, bareName, identifierMatcher,
+  sqlSkeleton, bareName, identifierMatcher, providedNames,
 } from './sql-deps.js'
 import { splitSqlStatements, isCommentOnly } from './utils/sql-split.js'
 import { applyTableFilter, isFiltered, type TableFilter } from './utils/table-filter.js'
@@ -354,6 +354,7 @@ export function planWork(scanResult: ScanResult, options: PlanOptions = {}): Pla
     }
   }
 
+  if (isFiltered(options.tableFilter)) plan.sqlStatements = withinTables(plan.sqlStatements, plan.skipped)
   plan.sqlStatements = holdBackDropsStillInUse(plan.sqlStatements, keptBack, plan.skipped, downsOf(relevant))
   // DBDiff's fixes keep the order DBDiff wrote them in, which it took from
   // the catalog; the others are placed around them — see orderStatements().
@@ -361,6 +362,49 @@ export function planWork(scanResult: ScanResult, options: PlanOptions = {}): Pla
   plan.sqlStatements = orderStatements(plan.sqlStatements, s => s.sql, s => dbdiffOrder.get(s))
   plan.sqlStatements = dropDuplicateObjectFixes(plan.sqlStatements, plan.skipped)
   return plan
+}
+
+/** Why a fix that names no table is left out under --tables. */
+export const OUTSIDE_TABLES = 'Outside --tables: names none of the selected tables, and nothing selected needs it'
+
+/**
+ * Under --tables, the fixes that name no table at all: a type, a function,
+ * default privileges, a grant on a schema. Each was applied whatever the
+ * tables were, so `--tables=orders` also created every new type and function
+ * the source had, and granted on objects --tables had left out — one of which
+ * failed and rolled the whole apply back.
+ *
+ * Such a fix now comes along only with what needs it: when a fix that is in
+ * (one naming a selected table, or one already brought along) uses something
+ * it creates, as a column uses a type or a trigger a function; when it acts
+ * on something such a fix creates, as a grant or comment on that function
+ * does; or when it is about a selected table's own serial sequence
+ * (`orders_id_seq`). Anything else is left out, and says why.
+ */
+function withinTables(statements: PlannedSql[], skipped: PromoteResult['skipped']): PlannedSql[] {
+  const named = statements.map(s => referencedTables(s.sql))
+  const provides = statements.map(s => providedNames(s.sql))
+  const kept = statements.map((_, i) => named[i].length > 0)
+  const tables = new Set(named.flat())
+  const sequenceOfKeptTable = (sql: string) =>
+    [...sql.matchAll(/"?([A-Za-z_][\w$]*_seq)"?/g)].some(m => [...tables].some(t => m[1].toLowerCase().startsWith(`${t}_`)))
+  for (let changed = true; changed;) {
+    changed = false
+    for (let i = 0; i < statements.length; i++) {
+      if (kept[i]) continue
+      const neededByKept = provides[i].some(name => {
+        const re = identifierMatcher(name)
+        return statements.some((s, j) => kept[j] && j !== i && re.test(s.sql))
+      })
+      const actsOnKept = statements.some((_, j) => kept[j] && provides[j].some(name => identifierMatcher(name).test(statements[i].sql)))
+      if (neededByKept || actsOnKept || sequenceOfKeptTable(statements[i].sql)) {
+        kept[i] = true
+        changed = true
+      }
+    }
+  }
+  statements.forEach((s, i) => { if (!kept[i]) skipped.push({ check: s.check, issueId: s.issueId, reason: OUTSIDE_TABLES }) })
+  return statements.filter((_, i) => kept[i])
 }
 
 /** `DROP TYPE|DOMAIN|FUNCTION|PROCEDURE|SEQUENCE [IF EXISTS] <name>`, capturing the name. */
@@ -700,12 +744,28 @@ async function retriedWithKeyDeferred(client: pg.Client, guard: DataSyncGuard, s
   try {
     if (!(await client.query('ROLLBACK TO SAVEPOINT sf_fix').then(() => true, () => false))) return false
     if (!(await guard.deferSelfReference(sql, err))) return false
-    await client.query(sql)
-    await client.query('RELEASE SAVEPOINT sf_fix')
+    await client.query(thenSavepoint(sql))
     return true
   } catch {
     return false
   }
+}
+
+/**
+ * A fix, then the savepoint the next one rolls back to, as one query: one
+ * round trip per fix, where SAVEPOINT, the fix and RELEASE were three. Over a
+ * link with latency that was most of an apply.
+ *
+ * The savepoint comes after the fix, not before it, because PostgreSQL
+ * parses a query of several statements whole before running any: a fix with
+ * a syntax error (a feature an older target lacks) ran nothing, a SAVEPOINT
+ * in front of it included, and there was nothing to roll back to. Taken at
+ * the end of the previous fix (and once after BEGIN), the savepoint is there
+ * whatever this one does. The fix's text ends at a newline, so a trailing
+ * line comment can't swallow what follows.
+ */
+export function thenSavepoint(sql: string): string {
+  return `${sql}\n;RELEASE SAVEPOINT sf_fix;SAVEPOINT sf_fix`
 }
 
 /** One transaction; true when it committed. */
@@ -726,6 +786,7 @@ async function runBatch(
     return false
   }
   await client.query('BEGIN')
+  await client.query('SAVEPOINT sf_fix')
 
   // Fixes whose dependency is missing are tried again once the others have
   // run, in case what they need comes later in the batch. Only the ones still
@@ -737,15 +798,15 @@ async function runBatch(
     for (const stmt of pending) {
       if (stmt.check === 'data') {
         try {
-          await guard.before(stmt.sql)
+          // Triggers held off stay off if this fix is rolled back: the
+          // savepoint moves past them.
+          if (await guard.before(stmt.sql)) await client.query('SAVEPOINT sf_fix')
         } catch (err) {
           return fail(stmt, err)
         }
       }
-      await client.query('SAVEPOINT sf_fix')
       try {
-        await client.query(stmt.sql)
-        await client.query('RELEASE SAVEPOINT sf_fix')
+        await client.query(thenSavepoint(stmt.sql))
         done.push({ check: stmt.check, issueId: stmt.issueId, sql: stmt.sql })
       } catch (err) {
         const why = unmetDependency(stmt.sql, err, olderTarget)
