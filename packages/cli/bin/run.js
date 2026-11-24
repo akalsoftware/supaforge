@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import {existsSync} from 'node:fs'
-import {execute, settings} from '@oclif/core'
+import {settings} from '@oclif/core'
 
 // The published package is compiled and ships no src/. Left on, oclif looks
 // for TypeScript whenever NODE_ENV is development or test — as in many
@@ -16,7 +16,9 @@ process.stdout.on('error', (err) => {
   throw err
 })
 
-await execute({dir: import.meta.url}).catch((err) => {
+const {execute} = await import('../dist/cli-entry.js')
+
+await execute(import.meta.url).catch((err) => {
   // oclif handles CLIError internally — this catches truly unexpected errors.
   if (err && typeof err === 'object' && 'oclif' in err) return
   process.stderr.write(`\nUnexpected error: ${err?.message ?? err}\n`)

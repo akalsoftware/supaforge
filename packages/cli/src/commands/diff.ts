@@ -21,6 +21,7 @@ import { Preflight } from '../preflight.js'
 import type { SupaForgeConfig } from '../types/config.js'
 import { redactUrls, describeFailure } from '../utils/error.js'
 import { openSchemaDir } from '../schema-dir.js'
+import { preflightCode } from '../utils/error-report.js'
 
 
 /** The source environment a --source-dir run compares from. */
@@ -730,11 +731,14 @@ export default class Diff extends BaseCommand {
       }, null, 2) + '\n')
       this.exit(2)
     }
+    const code = preflightCode(report.checks.filter(c => !c.passed))
     if (flags.json) {
-      this.json({ error: message, preflight: report.checks.map(stripError) })
-      this.exit(1)
+      this.json({ error: message, code, preflight: report.checks.map(stripError) })
+      this.exit(2)
     }
-    this.error('Diff aborted — fix the issues above first.', { exit: 1 })
+    // Exit 2, couldn't run, as under --ci (see runPreflight). Piped, the line
+    // names what failed: the checks above it went to a terminal, or nowhere.
+    this.error(process.stderr.isTTY ? 'Diff aborted — fix the issues above first.' : message, { exit: 2, code })
   }
 }
 
