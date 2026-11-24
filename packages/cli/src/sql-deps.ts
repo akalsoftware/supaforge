@@ -424,6 +424,25 @@ export function createsOnlyTriggers(sql: string): boolean {
 }
 
 export function referencedTables(sql: string): string[] {
+  const tree = parseStatements(sql)
+  if (!tree) return referencedByText(sql)
+  const names = new Set<string>()
+  for (const { kind, node } of tree) {
+    for (const name of tablesInTree(kind, node)) names.add(name)
+    // A routine's body is text to the parser: read it as text, as before.
+    if (kind === 'CreateFunctionStmt' || kind === 'DoStmt') {
+      for (const body of bodiesOf(node)) for (const name of referencedByText(body)) names.add(name)
+    }
+  }
+  return [...names]
+}
+
+/**
+ * The tables in a statement's text, read by pattern: for SQL the parser
+ * refuses, and for a routine's body, which it keeps as a string. Over-
+ * inclusive by design (see referencedTables).
+ */
+function referencedByText(sql: string): string[] {
   const names = new Set<string>()
   for (const pattern of [BODY_TABLE_REF, ON_TABLE_REF, TARGET_TABLE_REF]) {
     for (const match of sql.matchAll(pattern)) {
@@ -432,6 +451,80 @@ export function referencedTables(sql: string): string[] {
     }
   }
   return [...names]
+}
+
+/** PostgreSQL's own catalogs: never a table of the user's to scope by. */
+function isCatalog(rangeVar: { relname?: string; schemaname?: string }): boolean {
+  const schema = rangeVar.schemaname
+  if (schema === 'pg_catalog' || schema === 'information_schema') return true
+  return !schema && /^pg_/i.test(rangeVar.relname ?? '')
+}
+
+/** The kinds of COMMENT ON whose object is a table, or belongs to one (the name before last). */
+const COMMENT_ON_TABLE = new Set(['OBJECT_TABLE', 'OBJECT_VIEW', 'OBJECT_MATVIEW', 'OBJECT_FOREIGN_TABLE'])
+const COMMENT_ON_ITS_TABLE = new Set(['OBJECT_COLUMN', 'OBJECT_TABCONSTRAINT', 'OBJECT_TRIGGER', 'OBJECT_POLICY', 'OBJECT_RULE'])
+
+/** A `List` of `String`s as names. */
+function nameList(value: unknown): string[] {
+  const items = (value as { List?: { items?: unknown[] } } | undefined)?.List?.items ?? (Array.isArray(value) ? value : [])
+  return (items as Array<{ String?: { sval?: string } }>).map(i => i.String?.sval ?? '').filter(Boolean)
+}
+
+/**
+ * The tables a parsed statement names: each table reference (`RangeVar`) in
+ * it, wherever it sits — a foreign key's target, a view's FROM, a GRANT's
+ * object — but not a role, keyword or catalog, which reading the text took
+ * for tables: `ON UPDATE NO ACTION` was a table called "no", `ON TABLES` in
+ * ALTER DEFAULT PRIVILEGES one called "tables", and a REVOKE's `FROM "anon"`
+ * one called "anon". A sequence is the table that owns it.
+ */
+function tablesInTree(kind: string, node: Record<string, unknown>): string[] {
+  const out = new Set<string>()
+  // What a statement creates, when that is not a table: a view is scoped by
+  // the tables it reads, a sequence by the table that owns it.
+  const created = kind === 'ViewStmt' ? node.view
+    : kind === 'CreateTableAsStmt' ? (node.into as { rel?: unknown } | undefined)?.rel
+    : kind === 'CreateSeqStmt' || kind === 'AlterSeqStmt' ? node.sequence
+    : undefined
+  // GRANT ON SEQUENCE names sequences, not tables (see scopedTo in promote.ts).
+  const skip = kind === 'GrantStmt' && node.objtype === 'OBJECT_SEQUENCE' ? node.objects : undefined
+  const visit = (value: unknown): void => {
+    if (value === created || value === skip) return
+    if (Array.isArray(value)) { for (const item of value) visit(item); return }
+    if (!value || typeof value !== 'object') return
+    const obj = value as Record<string, unknown>
+    if (typeof obj.relname === 'string') {
+      if (!isCatalog(obj as { relname: string; schemaname?: string })) out.add(obj.relname.toLowerCase())
+      return
+    }
+    const def = obj.DefElem as { defname?: string; arg?: unknown } | undefined
+    if (def?.defname === 'owned_by') {
+      const owner = nameList(def.arg)
+      if (owner.length >= 2) out.add(owner[owner.length - 2].toLowerCase())
+    }
+    for (const v of Object.values(obj)) visit(v)
+  }
+  visit(node)
+  if (kind === 'CommentStmt') {
+    const objects = nameList(node.object)
+    const objtype = String(node.objtype)
+    if (COMMENT_ON_TABLE.has(objtype) && objects.length) out.add(objects[objects.length - 1].toLowerCase())
+    if (COMMENT_ON_ITS_TABLE.has(objtype) && objects.length >= 2) out.add(objects[objects.length - 2].toLowerCase())
+  }
+  return [...out]
+}
+
+/** The bodies a CREATE FUNCTION or DO carries, as written. */
+function bodiesOf(node: Record<string, unknown>): string[] {
+  const out: string[] = []
+  const defs = [...((node.options as unknown[]) ?? []), ...((node.args as unknown[]) ?? [])]
+  for (const d of defs as Array<{ DefElem?: { defname?: string; arg?: unknown } }>) {
+    if (d.DefElem?.defname !== 'as') continue
+    const arg = d.DefElem.arg as { String?: { sval?: string } }
+    if (arg?.String?.sval) out.push(arg.String.sval)
+    else out.push(...nameList(arg))
+  }
+  return out
 }
 
 // ─── Ordering ────────────────────────────────────────────────────────────────

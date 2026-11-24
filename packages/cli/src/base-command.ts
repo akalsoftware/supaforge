@@ -9,6 +9,7 @@ import type { PreflightReport } from './preflight.js'
 import { appendRunLog, redactArgs, type RunLogCheckSummary } from './run-log.js'
 import { installProcessGuard, noteJsonWritten } from './process-guard.js'
 import { errorJson, errorLine, preflightCode } from './utils/error-report.js'
+import { printJson } from './utils/json-stream.js'
 
 /**
  * Shared base for all supaforge commands.
@@ -35,11 +36,14 @@ export abstract class BaseCommand extends Command {
 
   private _jsonWritten = false
 
-  /** The command's result as JSON, on stdout. */
+  /**
+   * The command's result as JSON, on stdout: written in pieces, never as one
+   * string, which V8 caps at about 512 MiB (json-stream.ts).
+   */
   protected json(value: unknown): void {
     this._jsonWritten = true
     noteJsonWritten()
-    process.stdout.write(JSON.stringify(value, null, 2) + '\n')
+    printJson(value)
   }
 
   /** Call after scan() to attach per-check metadata to the run log entry. */

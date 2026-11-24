@@ -169,6 +169,32 @@ describe('referencedTables', () => {
     expect(referencedTables(sql)).toContain('orders')
   })
 
+  it('reads none of these as a table: a keyword, a role, a catalog', () => {
+    // Each of these was once a table to --tables, and its fix skipped as
+    // depending on it.
+    expect(referencedTables('CREATE TABLE "a" ("id" int REFERENCES "b"("id") ON UPDATE NO ACTION ON DELETE NO ACTION);').sort()).toEqual(['a', 'b'])
+    expect(referencedTables('ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT EXECUTE ON FUNCTIONS TO "postgres";')).toEqual([])
+    expect(referencedTables('ALTER DEFAULT PRIVILEGES IN SCHEMA "public" GRANT SELECT ON TABLES TO "anon";')).toEqual([])
+    expect(referencedTables('REVOKE SELECT ON "public"."orders" FROM "anon", "authenticated";')).toEqual(['orders'])
+    expect(referencedTables('SELECT setval(q.seqrelid, top) FROM (SELECT max("id") AS top FROM "plans") x, pg_depend d JOIN pg_sequence q ON q.seqrelid = d.objid JOIN pg_attribute a ON a.attrelid = d.refobjid;')).toEqual(['plans'])
+  })
+
+  it('a sequence is its table\'s; a view is scoped by what it reads', () => {
+    expect(referencedTables('ALTER SEQUENCE "orders_id_seq" OWNED BY "public"."orders"."id";')).toEqual(['orders'])
+    expect(referencedTables('GRANT USAGE ON SEQUENCE "public"."orders_id_seq" TO "anon";')).toEqual([])
+    expect(referencedTables('CREATE MATERIALIZED VIEW "totals" AS SELECT 1 FROM "orders";')).toEqual(['orders'])
+  })
+
+  it('a comment on a column or constraint is its table\'s', () => {
+    expect(referencedTables(`COMMENT ON COLUMN "public"."orders"."total" IS 'x';`)).toEqual(['orders'])
+    expect(referencedTables(`COMMENT ON CONSTRAINT "k" ON "public"."orders" IS 'x';`)).toEqual(['orders'])
+    expect(referencedTables(`COMMENT ON TABLE "orders" IS 'x';`)).toEqual(['orders'])
+  })
+
+  it('falls back to reading the text when the parser refuses the SQL', () => {
+    expect(referencedTables('CREATE VIEW v AS SELECT id FROM orders WHERE ((;')).toContain('orders')
+  })
+
   it('reports nothing for a statement that touches no table', () => {
     expect(referencedTables('CREATE OR REPLACE FUNCTION f() RETURNS trigger AS $$ BEGIN RETURN NEW; END; $$;')).toEqual([])
   })
