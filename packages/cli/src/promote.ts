@@ -744,12 +744,28 @@ async function retriedWithKeyDeferred(client: pg.Client, guard: DataSyncGuard, s
   try {
     if (!(await client.query('ROLLBACK TO SAVEPOINT sf_fix').then(() => true, () => false))) return false
     if (!(await guard.deferSelfReference(sql, err))) return false
-    await client.query(sql)
-    await client.query('RELEASE SAVEPOINT sf_fix')
+    await client.query(thenSavepoint(sql))
     return true
   } catch {
     return false
   }
+}
+
+/**
+ * A fix, then the savepoint the next one rolls back to, as one query: one
+ * round trip per fix, where SAVEPOINT, the fix and RELEASE were three. Over a
+ * link with latency that was most of an apply.
+ *
+ * The savepoint comes after the fix, not before it, because PostgreSQL
+ * parses a query of several statements whole before running any: a fix with
+ * a syntax error (a feature an older target lacks) ran nothing, a SAVEPOINT
+ * in front of it included, and there was nothing to roll back to. Taken at
+ * the end of the previous fix (and once after BEGIN), the savepoint is there
+ * whatever this one does. The fix's text ends at a newline, so a trailing
+ * line comment can't swallow what follows.
+ */
+export function thenSavepoint(sql: string): string {
+  return `${sql}\n;RELEASE SAVEPOINT sf_fix;SAVEPOINT sf_fix`
 }
 
 /** One transaction; true when it committed. */
@@ -770,6 +786,7 @@ async function runBatch(
     return false
   }
   await client.query('BEGIN')
+  await client.query('SAVEPOINT sf_fix')
 
   // Fixes whose dependency is missing are tried again once the others have
   // run, in case what they need comes later in the batch. Only the ones still
@@ -781,15 +798,15 @@ async function runBatch(
     for (const stmt of pending) {
       if (stmt.check === 'data') {
         try {
-          await guard.before(stmt.sql)
+          // Triggers held off stay off if this fix is rolled back: the
+          // savepoint moves past them.
+          if (await guard.before(stmt.sql)) await client.query('SAVEPOINT sf_fix')
         } catch (err) {
           return fail(stmt, err)
         }
       }
-      await client.query('SAVEPOINT sf_fix')
       try {
-        await client.query(stmt.sql)
-        await client.query('RELEASE SAVEPOINT sf_fix')
+        await client.query(thenSavepoint(stmt.sql))
         done.push({ check: stmt.check, issueId: stmt.issueId, sql: stmt.sql })
       } catch (err) {
         const why = unmetDependency(stmt.sql, err, olderTarget)

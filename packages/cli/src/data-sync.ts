@@ -80,23 +80,25 @@ export class DataSyncGuard {
   constructor(private readonly client: Pick<pg.Client, 'query'>) {}
 
   /** Before a data fix: hold off the triggers of the table it writes, once per table. */
-  async before(sql: string): Promise<void> {
+  /** True when it held triggers off, and so changed the target. */
+  async before(sql: string): Promise<boolean> {
     const name = writtenTable(sql)
-    if (!name || this.tables.has(name)) return
+    if (!name || this.tables.has(name)) return false
     const facts = await this.factsFor(name)
     this.tables.set(name, facts)
-    if (!facts || facts.triggers.length === 0) return
+    if (!facts || facts.triggers.length === 0) return false
     const list = facts.triggers.map(t => `"${t}"`).join(', ')
     if (!facts.owned) {
       this.warnings.push(`Triggers on ${facts.rel} fired as its rows were synced (${list}): the connecting role does not `
         + 'own the table, so they could not be held off, and what they write may differ from the source.')
-      return
+      return false
     }
     for (const trigger of facts.triggers) {
       await this.client.query(`ALTER TABLE ${facts.rel} DISABLE TRIGGER ${quoteName(trigger)}`)
       this.reenable.push(`ALTER TABLE ${facts.rel} ENABLE TRIGGER ${quoteName(trigger)}`)
     }
     this.notes.push(`Held off ${facts.triggers.length === 1 ? 'trigger' : 'triggers'} ${list} on ${facts.rel} while its rows were synced.`)
+    return true
   }
 
   /**

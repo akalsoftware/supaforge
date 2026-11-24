@@ -16,17 +16,19 @@ vi.mock('pg', () => ({
     Client: vi.fn(function () {
       let pending = new Set<string>()
       let atSavepoint = new Set<string>()
-      return {
-        on: vi.fn(),
-        connect: vi.fn(async () => undefined),
-        end: vi.fn(async () => undefined),
-        query: vi.fn(async (sql: string) => {
+      let hasSavepoint = false
+      // As PostgreSQL runs a query of several statements: in order, stopping
+      // at the first that fails. `SAVEPOINT; fix; RELEASE` is sent as one.
+      const one = async (sql: string) => {
           log.push(sql)
-          if (sql === 'BEGIN') pending = new Set(committed)
+          if (sql === 'BEGIN') { pending = new Set(committed); hasSavepoint = false }
           else if (sql === 'COMMIT') committed = pending
           else if (sql === 'ROLLBACK') pending = new Set(committed)
-          else if (sql.startsWith('SAVEPOINT')) atSavepoint = new Set(pending)
-          else if (sql.startsWith('ROLLBACK TO SAVEPOINT')) pending = new Set(atSavepoint)
+          else if (sql.startsWith('SAVEPOINT')) { atSavepoint = new Set(pending); hasSavepoint = true }
+          else if (sql.startsWith('ROLLBACK TO SAVEPOINT')) {
+            if (!hasSavepoint) throw Object.assign(new Error('savepoint "sf_fix" does not exist'), { code: '3B001' })
+            pending = new Set(atSavepoint)
+          }
           else if (sql.startsWith('RELEASE SAVEPOINT')) { /* kept */ }
           // A revoke on `public.<name>` needs <name> to exist.
           else if (/^REVOKE\b/i.test(sql)) {
@@ -46,6 +48,24 @@ vi.mock('pg', () => ({
             if (provides) pending.add(provides)
           }
           return { rows: [] }
+      }
+      return {
+        on: vi.fn(),
+        connect: vi.fn(async () => undefined),
+        end: vi.fn(async () => undefined),
+        query: vi.fn(async (sql: string) => {
+          const tail = '\n;RELEASE SAVEPOINT sf_fix;SAVEPOINT sf_fix'
+          const parts = sql.endsWith(tail) ? [sql.slice(0, -tail.length), 'RELEASE SAVEPOINT sf_fix', 'SAVEPOINT sf_fix'] : [sql]
+          // PostgreSQL parses the whole query first: a syntax error runs none of it.
+          const unparsable = parts.find(p => /parse-error:(\w+)/.test(p))
+          if (unparsable) {
+            log.push(unparsable)
+            const code = /parse-error:(\w+)/.exec(unparsable)![1]
+            throw Object.assign(new Error(`syntax error (${code})`), { code })
+          }
+          let result = { rows: [] as unknown[] }
+          for (const part of parts) result = await one(part)
+          return result
         }),
       }
     }),
@@ -74,6 +94,19 @@ describe('promote: one fix the target cannot take', () => {
   beforeEach(() => {
     log.length = 0
     committed = new Set()
+  })
+
+  it('leaves out a fix that fails before it runs at all, a syntax error, and commits the rest', async () => {
+    // A query of several statements is parsed whole first, so a fix the
+    // target cannot parse ran nothing of its query: a savepoint taken in that
+    // query was never there to roll back to, and the whole apply failed.
+    const result = await promote({
+      dbUrl: 'postgres://unused',
+      scanResult: scan([['a', 'provides:a'], ['newer', 'parse-error:42P01'], ['b', 'needs:a provides:b']]),
+    })
+    expect(result.applied.map(a => a.issueId)).toEqual(['a', 'b'])
+    expect(result.errors.map(e => e.issueId)).toEqual(['newer'])
+    expect(committed).toEqual(new Set(['a', 'b']))
   })
 
   it('leaves out that fix and commits the rest', async () => {
