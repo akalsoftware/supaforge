@@ -3,7 +3,6 @@ import { defineConfig } from 'tsup'
 export default defineConfig({
   entry: [
     'src/index.ts',
-    'src/cli-entry.ts',
     'src/help.ts',
     'src/base-command.ts',
     'src/commands/init.ts',
