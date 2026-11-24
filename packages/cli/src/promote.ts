@@ -708,6 +708,18 @@ async function retriedWithKeyDeferred(client: pg.Client, guard: DataSyncGuard, s
   }
 }
 
+/**
+ * A fix and the savepoint around it as one query: one round trip, where the
+ * three (SAVEPOINT, the fix, RELEASE) were three. Over a link with latency
+ * that was most of an apply. On a failure the statements after it don't run,
+ * RELEASE among them, and the savepoint is there to roll back to. The fix's
+ * own text ends at a newline, so a trailing line comment can't swallow the
+ * RELEASE.
+ */
+export function inSavepoint(sql: string): string {
+  return `SAVEPOINT sf_fix;\n${sql}\n;RELEASE SAVEPOINT sf_fix`
+}
+
 /** One transaction; true when it committed. */
 async function runBatch(
   client: pg.Client,
@@ -742,10 +754,8 @@ async function runBatch(
           return fail(stmt, err)
         }
       }
-      await client.query('SAVEPOINT sf_fix')
       try {
-        await client.query(stmt.sql)
-        await client.query('RELEASE SAVEPOINT sf_fix')
+        await client.query(inSavepoint(stmt.sql))
         done.push({ check: stmt.check, issueId: stmt.issueId, sql: stmt.sql })
       } catch (err) {
         const why = unmetDependency(stmt.sql, err, olderTarget)

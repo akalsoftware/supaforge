@@ -1,5 +1,6 @@
 import type { DriftIssue } from '../types/drift'
-import { dataScope, runDbDiff, sqlToIssues, type DbDiffOptions } from '../dbdiff'
+import { dataScope, runDbDiff, type DbDiffOptions } from '../dbdiff'
+import { splitStatements } from '../dbdiff-output'
 import { DEFAULT_IGNORE_SCHEMAS } from '../defaults'
 import { filterChangedTables } from '../checksum'
 import type { QueryFn } from '../db'
@@ -7,6 +8,7 @@ import { pgQuery } from '../db'
 import { Check, CheckSkipped, type CheckContext } from './base'
 import { applyTableFilter } from '../utils/table-filter'
 import { sequenceIssues } from './data-sequences'
+import { dataIssues } from './data-groups'
 
 export type RunDbDiffFn = (options: DbDiffOptions) => ReturnType<typeof runDbDiff>
 
@@ -65,8 +67,11 @@ export class DataCheck extends Check {
         include: 'both',
         ...dataScope(changed, ctx.config.ignoreSchemas ?? DEFAULT_IGNORE_SCHEMAS),
         timeoutSeconds: ctx.target?.checks?.schema?.timeout,
+        statements: true,
       })
-      return [...sqlToIssues(result, 'data'), ...sequences]
+      // A runner of an older shape gives the two strings: split them as before.
+      const { up, down } = result.statements ?? { up: splitStatements(result.up), down: splitStatements(result.down) }
+      return [...dataIssues(up, down), ...sequences]
     } catch (err) {
       if (err instanceof Error && err.message.includes('@dbdiff/cli is not installed')) {
         return sequences

@@ -172,6 +172,12 @@ Useful `diff` flags:
   table's foreign key at the end instead, and an orphan still rolls
   everything back. Both need the connecting role to own the table; when it
   doesn't, the triggers fire and the run says so.
+- **Rows in batches.** A table's rows to insert, update or delete are one
+  finding, `data-insert-public.plans`, of up to a thousand rows, sent to the
+  target in one round trip; a table with more continues in
+  `data-insert-public.plans:2` and on. So a large sync is a short report and
+  quick over a slow link, and `--only='data-*-public.plans*'` picks one
+  table's rows.
 - **Sequences follow the rows.** After syncing rows, each serial or identity
   sequence on those tables is moved past the largest id, so the app's next
   insert doesn't collide with a synced row. A sequence is only ever moved

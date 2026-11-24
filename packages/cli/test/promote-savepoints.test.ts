@@ -16,11 +16,9 @@ vi.mock('pg', () => ({
     Client: vi.fn(function () {
       let pending = new Set<string>()
       let atSavepoint = new Set<string>()
-      return {
-        on: vi.fn(),
-        connect: vi.fn(async () => undefined),
-        end: vi.fn(async () => undefined),
-        query: vi.fn(async (sql: string) => {
+      // As PostgreSQL runs a query of several statements: in order, stopping
+      // at the first that fails. `SAVEPOINT; fix; RELEASE` is sent as one.
+      const one = async (sql: string) => {
           log.push(sql)
           if (sql === 'BEGIN') pending = new Set(committed)
           else if (sql === 'COMMIT') committed = pending
@@ -46,6 +44,18 @@ vi.mock('pg', () => ({
             if (provides) pending.add(provides)
           }
           return { rows: [] }
+      }
+      return {
+        on: vi.fn(),
+        connect: vi.fn(async () => undefined),
+        end: vi.fn(async () => undefined),
+        query: vi.fn(async (sql: string) => {
+          const parts = sql.startsWith('SAVEPOINT sf_fix;\n')
+            ? ['SAVEPOINT sf_fix', sql.slice('SAVEPOINT sf_fix;\n'.length, sql.lastIndexOf('\n;RELEASE')), 'RELEASE SAVEPOINT sf_fix']
+            : [sql]
+          let result = { rows: [] as unknown[] }
+          for (const part of parts) result = await one(part)
+          return result
         }),
       }
     }),
