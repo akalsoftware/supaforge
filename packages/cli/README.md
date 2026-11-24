@@ -172,10 +172,12 @@ Useful `diff` flags:
   triggers on those tables are held off while their rows are synced and put
   back before commit, so an `updated_at` or audit trigger doesn't rewrite
   what was copied, and a webhook doesn't fire once per row. A trigger set
-  `ENABLE ALWAYS` still fires. A row that needs one written after it in the
-  same table, such as a node moved under a newer one, is checked against the
-  table's foreign key at the end instead, and an orphan still rolls
-  everything back. Both need the connecting role to own the table; when it
+  `ENABLE ALWAYS` still fires. Rows are written in the order the source's
+  foreign keys need, a referenced table's before those referencing it, and
+  deleted the other way round. A row that needs one written after it, in the
+  same table (a node moved under a newer one) or in tables that reference each
+  other, is checked against that foreign key at the end instead, and an
+  orphan still rolls everything back. Both need the connecting role to own the table; when it
   doesn't, the triggers fire and the run says so.
 - **Rows in batches.** A table's rows to insert, update or delete are one
   finding, `data-insert-public.plans`, of up to a thousand rows, sent to the

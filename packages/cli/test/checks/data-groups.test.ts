@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { dataIssues, MAX_BYTES, MAX_ROWS } from '../../src/checks/data-groups.js'
+import { dataIssues, inForeignKeyOrder, MAX_BYTES, MAX_ROWS } from '../../src/checks/data-groups.js'
 import { thenSavepoint } from '../../src/promote.js'
 
 const ins = (t: string, id: number) => `INSERT INTO ${t} ("id") VALUES('${id}');`
@@ -68,5 +68,35 @@ describe('thenSavepoint', () => {
 
   it('a trailing line comment in the fix cannot swallow what follows', () => {
     expect(thenSavepoint('SELECT 1 -- note').split('\n').at(-1)).toBe(';RELEASE SAVEPOINT sf_fix;SAVEPOINT sf_fix')
+  })
+})
+
+describe('inForeignKeyOrder', () => {
+  const issue = (id: string) => ({ id, check: 'data' as const, severity: 'warning' as const, title: id, description: '', sql: { up: id, down: '' } })
+  const ids = (xs: Array<{ id: string }>) => xs.map(x => x.id)
+
+  it('writes a referenced table\'s rows before the rows that reference them, and deletes the other way round', () => {
+    const order = inForeignKeyOrder([
+      issue('data-insert-public.orders'), issue('data-delete-public.orders'),
+      issue('data-insert-public.users'), issue('data-delete-public.users'), issue('data-update-public.users'),
+      issue('data-insert-public.lines'), issue('data-insert-public.orders:2'),
+    ], [{ child: 'public.orders', parent: 'public.users' }, { child: 'public.lines', parent: 'public.orders' }])
+    expect(ids(order)).toEqual([
+      'data-delete-public.orders', 'data-delete-public.users',
+      'data-insert-public.users', 'data-update-public.users',
+      'data-insert-public.orders', 'data-insert-public.orders:2',
+      'data-insert-public.lines',
+    ])
+  })
+
+  it('keeps DBDiff\'s order where no key decides, a table in a cycle included', () => {
+    const xs = [issue('data-insert-public.a'), issue('data-insert-public.b'), issue('data-change-3')]
+    expect(ids(inForeignKeyOrder(xs, []))).toEqual(ids(xs))
+    expect(ids(inForeignKeyOrder(xs, [{ child: 'public.a', parent: 'public.b' }, { child: 'public.b', parent: 'public.a' }]))).toEqual(ids(xs))
+  })
+
+  it('ignores a key to a table whose rows are not being written, and a table’s key to itself', () => {
+    const xs = [issue('data-insert-public.b'), issue('data-insert-public.a')]
+    expect(ids(inForeignKeyOrder(xs, [{ child: 'public.a', parent: 'public.z' }, { child: 'public.b', parent: 'public.b' }]))).toEqual(ids(xs))
   })
 })

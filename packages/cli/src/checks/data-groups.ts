@@ -102,3 +102,50 @@ export function dataIssues(up: string[], down: string[]): DriftIssue[] {
   }
   return issues
 }
+
+/** A foreign key between two tables, by `schema.table`: `child` references `parent`. */
+export interface ForeignKeyEdge { child: string; parent: string }
+
+const DATA_ID = /^data-(insert|update|delete)-(.+?)(?::\d+)?$/
+
+/**
+ * Data findings in an order the target's foreign keys accept: every table's
+ * deletes first, a referencing table's before the table it references, then
+ * inserts and updates, a referenced table's first.
+ *
+ * DBDiff writes rows table by table in name order, so syncing `orders` and
+ * the `users` they reference inserted the orders first, each failing the
+ * key — on any target, in any version, unless the parent's name sorted
+ * first. Within a table DBDiff's order is kept, and a table in a cycle of
+ * keys keeps its place: the apply defers the key a row fails and checks it
+ * before commit.
+ */
+export function inForeignKeyOrder(issues: DriftIssue[], edges: ForeignKeyEdge[]): DriftIssue[] {
+  const tableOf = (i: DriftIssue) => DATA_ID.exec(i.id)?.[2]
+  const kindOf = (i: DriftIssue) => DATA_ID.exec(i.id)?.[1]
+  const tables = [...new Set(issues.map(tableOf).filter((t): t is string => Boolean(t)))]
+  const inPlay = new Set(tables)
+  const parents = new Map<string, Set<string>>(tables.map(t => [t, new Set<string>()]))
+  for (const { child, parent } of edges) {
+    if (child !== parent && inPlay.has(child) && inPlay.has(parent)) parents.get(child)!.add(parent)
+  }
+  // Parents before children; what a cycle leaves, in the order first seen.
+  const rank = new Map<string, number>()
+  const remaining = new Set(tables)
+  while (remaining.size > 0) {
+    const ready = tables.filter(t => remaining.has(t) && [...parents.get(t)!].every(p => !remaining.has(p)))
+    const next = ready.length > 0 ? ready : [tables.find(t => remaining.has(t))!]
+    for (const t of next) { rank.set(t, rank.size); remaining.delete(t) }
+  }
+  const position = new Map(issues.map((issue, i) => [issue, i]))
+  const keyed = issues.map(issue => {
+    const table = tableOf(issue)
+    if (!table) return { issue, key: [2, 0, position.get(issue)!] }
+    const r = rank.get(table)!
+    return kindOf(issue) === 'delete'
+      ? { issue, key: [0, -r, position.get(issue)!] }
+      : { issue, key: [1, r, position.get(issue)!] }
+  })
+  keyed.sort((a, b) => a.key[0] - b.key[0] || a.key[1] - b.key[1] || a.key[2] - b.key[2])
+  return keyed.map(k => k.issue)
+}
