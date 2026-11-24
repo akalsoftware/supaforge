@@ -16,6 +16,7 @@ import { writeMigrationFile, migrationsDir } from '../migration-file.js'
 import { CHECK_NAMES } from '../types/drift.js'
 import type { ScanResult, CheckName } from '../types/drift.js'
 import { setLastScanResult, getLastScanResult } from './state.js'
+import { fitForAgent } from './fit.js'
 
 const SERVER_NAME = 'supaforge'
 
@@ -168,7 +169,8 @@ export function createServer(cwd = process.cwd(), options: ServerOptions = {}): 
   }
 
   const textResult = (body: unknown, isError = false) => ({
-    content: [{ type: 'text' as const, text: typeof body === 'string' ? body : JSON.stringify(body, null, 2) }],
+    // Sized for an agent: see fit.ts.
+    content: [{ type: 'text' as const, text: typeof body === 'string' ? body : fitForAgent(body) }],
     ...(isError ? { isError: true } : {}),
   })
   const failure = (err: unknown) => textResult(`Error: ${err instanceof Error ? err.message : String(err)}`, true)
@@ -465,12 +467,14 @@ export function createServer(cwd = process.cwd(), options: ServerOptions = {}): 
 
       description:
         'Retrieve the result for one check from the most recent diff or sync call. ' +
-        'Returns issues, status, and duration for the named check.',
+        'Returns issues, status, and duration for the named check. Long SQL is shortened in that list; ' +
+        'pass issueId for one finding with the whole of its SQL.',
       inputSchema: {
         check: z.enum(CHECK_NAMES).describe('The check name to retrieve (e.g. "rls-coverage").'),
+        issueId: z.string().optional().describe('One finding of that check, by its id, returned whole.'),
       },
     },
-    async ({ check }) => {
+    async ({ check, issueId }) => {
       const result = getLastScanResult()
       if (!result) {
         return {
@@ -487,7 +491,18 @@ export function createServer(cwd = process.cwd(), options: ServerOptions = {}): 
           isError: true,
         }
       }
-      return { content: [{ type: 'text' as const, text: JSON.stringify(checkResult, null, 2) }] }
+      if (issueId !== undefined) {
+        const issue = checkResult.issues.find(i => i.id === issueId)
+        if (!issue) {
+          return {
+            content: [{ type: 'text' as const, text: `No finding "${issueId}" in the ${check} check of the last scan.` }],
+            isError: true,
+          }
+        }
+        // Asked for by name: whole, however long its SQL.
+        return { content: [{ type: 'text' as const, text: JSON.stringify(issue, null, 2) }] }
+      }
+      return { content: [{ type: 'text' as const, text: fitForAgent(checkResult) }] }
     },
   )
 
@@ -538,7 +553,7 @@ export function createServer(cwd = process.cwd(), options: ServerOptions = {}): 
           ],
         }
       }
-      return { contents: [{ uri: uri.href, text: JSON.stringify(result, null, 2), mimeType: 'application/json' }] }
+      return { contents: [{ uri: uri.href, text: fitForAgent(result), mimeType: 'application/json' }] }
     },
   )
 
