@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { dataIssues, MAX_BYTES, MAX_ROWS } from '../../src/checks/data-groups.js'
-import { inSavepoint } from '../../src/promote.js'
+import { thenSavepoint } from '../../src/promote.js'
 
 const ins = (t: string, id: number) => `INSERT INTO ${t} ("id") VALUES('${id}');`
 const del = (t: string, id: number) => `DELETE FROM ${t} WHERE "id" = '${id}';`
@@ -61,12 +61,12 @@ describe('dataIssues', () => {
   })
 })
 
-describe('inSavepoint', () => {
-  it('one query: the savepoint, the fix, the release', () => {
-    expect(inSavepoint('INSERT INTO t VALUES (1);')).toBe('SAVEPOINT sf_fix;\nINSERT INTO t VALUES (1);\n;RELEASE SAVEPOINT sf_fix')
+describe('thenSavepoint', () => {
+  it('one query: the fix, then the savepoint the next one rolls back to', () => {
+    expect(thenSavepoint('INSERT INTO t VALUES (1);')).toBe('INSERT INTO t VALUES (1);\n;RELEASE SAVEPOINT sf_fix;SAVEPOINT sf_fix')
   })
 
-  it('a trailing line comment in the fix cannot swallow the release', () => {
-    expect(inSavepoint('SELECT 1 -- note').split('\n').at(-1)).toBe(';RELEASE SAVEPOINT sf_fix')
+  it('a trailing line comment in the fix cannot swallow what follows', () => {
+    expect(thenSavepoint('SELECT 1 -- note').split('\n').at(-1)).toBe(';RELEASE SAVEPOINT sf_fix;SAVEPOINT sf_fix')
   })
 })
