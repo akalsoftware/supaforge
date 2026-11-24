@@ -288,7 +288,7 @@ supaforge migrate run --env=prod --apply
 
 | Field | Meaning |
 | --- | --- |
-| `dbUrl` | PostgreSQL connection string. `$VAR` and `${VAR}` are read from the environment |
+| `dbUrl` | PostgreSQL connection string. `$VAR` and `${VAR}` are read from the environment. Use a direct connection or a session pooler (Supabase's is on port 5432), not a transaction pooler (6543): SupaForge's connection settings could stay on a pooled connection your app gets next, and it says so if it sees one |
 | `projectRef`, `accessToken` | Enable the Management API checks (auth, Edge Functions) |
 | `apiUrl` | A self-hosted API gateway, used instead of `projectRef` |
 | `studioUrl`, `functionsPath` | Where self-hosted Edge Functions are read from |

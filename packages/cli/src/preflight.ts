@@ -4,6 +4,7 @@ import { resolveConnectTimeoutMs, newPgClient } from './db.js'
 import { DB_PROBE_TIMEOUT_MS } from './constants.js'
 import { ok, warn, dim, cmd, bold } from './ui.js'
 import { redactUrls, describeFailure } from './utils/error.js'
+import { warnIfTransactionPooler } from './pooler.js'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -76,6 +77,7 @@ export async function checkConnection(dbUrl: string): Promise<ConnCheckResult> {
     await client.connect()
     const { rows } = await client.query('SHOW server_version')
     const version = (rows[0] as Record<string, string>).server_version
+    warnIfTransactionPooler(dbUrl)
     return { reachable: true, version }
   } catch (err) {
     return {
