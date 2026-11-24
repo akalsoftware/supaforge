@@ -103,7 +103,16 @@ export function isDiagnosticError(err: unknown): boolean {
 // ─── Connection Error Patterns ───────────────────────────────────────────────
 
 /** Known patterns matched against error messages, checked in order. */
-const CONNECTION_ERROR_PATTERNS: Array<{ test: (msg: string) => boolean; build: (host: string) => string }> = [
+const CONNECTION_ERROR_PATTERNS: Array<{ test: (msg: string) => boolean; build: (host: string, raw: string) => string }> = [
+  {
+    // First: libpq reports each address it tried, and a refused ::1 ahead of
+    // a certificate failure on 127.0.0.1 read as "the server does not appear
+    // to be running", of a server that had answered.
+    test: (m) => TLS_FAILURE.test(m),
+    build: (host, raw) => `TLS check of ${host} failed: ${tlsDetail(raw)}. A server whose certificate comes from a CA `
+      + 'of its own, as a hosted Supabase project\'s does, is verified with that CA: add sslrootcert=<file> to the '
+      + 'database URL (with sslmode=verify-full). sslmode=require encrypts without verifying.',
+  },
   {
     test: (m) => /ECONNREFUSED|Connection refused/i.test(m),
     build: (host) => `Cannot connect to PostgreSQL at ${host} — the server does not appear to be running. Start it and try again.`,
@@ -148,6 +157,21 @@ const CONNECTION_ERROR_PATTERNS: Array<{ test: (msg: string) => boolean; build: 
   },
 ]
 
+/** A certificate or TLS failure, said as one and with what to do; undefined for any other error. */
+export function tlsFailureMessage(err: unknown, dbUrl: string): string | undefined {
+  return TLS_FAILURE.test(errMsg(err)) ? friendlyDbError(err, dbUrl) : undefined
+}
+
+/** What a certificate or TLS failure says, from pg (Node) or libpq (DBDiff, pg_dump). */
+const TLS_FAILURE = /self[- ]signed certificate|unable to (?:verify|get local issuer)|certificate verify failed|root certificate file|Hostname\/IP does not match|certificate has expired|ERR_TLS_|SSL error|wrong version number|verifies the server against a CA/i
+
+/** The part of an error that says what went wrong with TLS, without the other addresses libpq tried. */
+function tlsDetail(raw: string): string {
+  const pieces = raw.split(/\n|(?<=\.)\s+(?=connection to server)/)
+  const found = pieces.find(p => TLS_FAILURE.test(p)) ?? raw
+  return found.replace(/^.*?failed:\s*/, '').replace(/\.\s*$/, '').trim()
+}
+
 /**
  * Extract host:port from a PostgreSQL connection URL.
  * Returns just the host portion with the port for display.
@@ -177,12 +201,15 @@ export function friendlyDbError(err: unknown, dbUrl?: string): string {
   // error naming a host that was demonstrably reachable (issue #29).
   if (isDiagnosticError(err)) return raw
 
+  // Already translated, by an inner call: once is enough.
+  if (/^TLS check of /.test(raw)) return raw
+
   const host = dbUrl ? extractHost(dbUrl) : 'the configured host'
 
   for (const pattern of CONNECTION_ERROR_PATTERNS) {
     try {
       if (pattern.test(raw)) {
-        return pattern.build(host)
+        return pattern.build(host, raw)
       }
     } catch {
       // A malformed host or an unexpected pattern failure must never turn a

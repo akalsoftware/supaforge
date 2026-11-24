@@ -1,3 +1,5 @@
+import { libpqUrl } from '../tls.js'
+
 /**
  * A connection URL for a libpq tool's command line, without its password,
  * and the environment that carries the password instead.
@@ -7,7 +9,9 @@
  * pg_dump, pg_restore and psql are given the password as PGPASSWORD, which
  * libpq reads when the URL has none.
  */
-export function pgToolConnection(url: string, base: NodeJS.ProcessEnv = process.env): { url: string; env: NodeJS.ProcessEnv } {
+export function pgToolConnection(dbUrl: string, base: NodeJS.ProcessEnv = process.env): { url: string; env: NodeJS.ProcessEnv } {
+  // libpq refuses a parameter it does not know, such as pg's uselibpqcompat.
+  const url = libpqUrl(dbUrl)
   let parsed: URL
   try {
     parsed = new URL(url)

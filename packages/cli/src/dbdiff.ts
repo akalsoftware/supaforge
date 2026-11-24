@@ -17,6 +17,7 @@ import { sqlSkeleton, policiesRemoved, codeMask } from './sql-deps'
 import { escapeRegex } from './utils/strings'
 import { pairUnits, parseUnits, REPLACING_KINDS, type DbDiffUnit } from './dbdiff-units'
 import { splitSqlStatements } from './utils/sql-split.js'
+import { libpqUrl } from './tls.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -212,7 +213,7 @@ export function buildDbDiffArgs(options: DbDiffOptions, outputFile: string): str
     'diff',
     // A process's arguments are readable by every user on the machine; its
     // environment only by its own user. See dbdiffUrlEnv().
-    ...(options.urlsOnCommandLine ? [`--server1-url=${options.sourceUrl}`, `--server2-url=${options.targetUrl}`] : []),
+    ...(options.urlsOnCommandLine ? [`--server1-url=${libpqUrl(options.sourceUrl)}`, `--server2-url=${libpqUrl(options.targetUrl)}`] : []),
     `--type=${options.type}`,
     // Was hardcoded to 'both', silently ignoring options.include. Every caller
     // passes 'both' (sqlToIssues pairs each UP statement with its DOWN
@@ -285,7 +286,8 @@ export function dataScope(tables: string[], ignoreSchemas: string[]): Pick<DbDif
 
 export function dbdiffUrlEnv(options: DbDiffOptions): Record<string, string> {
   if (options.urlsOnCommandLine) return {}
-  return { DBDIFF_SERVER1_URL: options.sourceUrl, DBDIFF_SERVER2_URL: options.targetUrl }
+  // As libpq reads them: DBDiff hands the TLS settings to libpq (tls.ts).
+  return { DBDIFF_SERVER1_URL: libpqUrl(options.sourceUrl), DBDIFF_SERVER2_URL: libpqUrl(options.targetUrl) }
 }
 
 /**
