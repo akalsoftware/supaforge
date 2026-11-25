@@ -33,9 +33,11 @@ export function installProcessGuard(argv: readonly string[] = process.argv): voi
       process.stderr.write(`SupaForge: an error no handler caught, carrying on: ${message}\n`)
       return
     }
-    if (argv.includes('--json') && !jsonWritten) {
+    if ((argv.includes('--json') || argv.includes('--jsonl')) && !jsonWritten) {
       jsonWritten = true
-      process.stdout.write(JSON.stringify({ error: message }, null, 2) + '\n')
+      process.stdout.write(argv.includes('--jsonl')
+        ? `${JSON.stringify({ type: 'error', error: message, code: 'E_FAILED' })}\n`
+        : JSON.stringify({ error: message }, null, 2) + '\n')
     }
     process.stderr.write(
       `\nUnexpected error: ${message}\n`

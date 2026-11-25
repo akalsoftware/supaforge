@@ -10,6 +10,7 @@ import { appendRunLog, redactArgs, type RunLogCheckSummary } from './run-log.js'
 import { installProcessGuard, noteJsonWritten } from './process-guard.js'
 import { errorJson, errorLine, preflightCode } from './utils/error-report.js'
 import { printJson } from './utils/json-stream.js'
+import { outputMode, writeRecord, writeResultRecords } from './utils/jsonl.js'
 
 /**
  * Shared base for all supaforge commands.
@@ -22,12 +23,12 @@ export abstract class BaseCommand extends Command {
   private _checkSummaries?: RunLogCheckSummary[]
 
   /**
-   * Under --json, stdout carries the JSON and nothing else: every other line a
-   * command prints — preflight checks, progress — goes to stderr. Before, the
-   * text came first and the output did not parse.
+   * Under --json (or --jsonl), stdout carries the JSON and nothing else:
+   * every other line a command prints — preflight checks, progress — goes to
+   * stderr. Before, the text came first and the output did not parse.
    */
   override log(message = '', ...args: unknown[]): void {
-    if (this.argv.includes('--json')) {
+    if (outputMode(this.argv)) {
       process.stderr.write(formatWithOptions({ colors: false }, message, ...args) + '\n')
       return
     }
@@ -43,7 +44,9 @@ export abstract class BaseCommand extends Command {
   protected json(value: unknown): void {
     this._jsonWritten = true
     noteJsonWritten()
-    printJson(value)
+    // --jsonl: the same content, a record a line (jsonl.ts).
+    if (outputMode(this.argv) === 'jsonl') writeResultRecords(value)
+    else printJson(value)
   }
 
   /** Call after scan() to attach per-check metadata to the run log entry. */
@@ -64,9 +67,16 @@ export abstract class BaseCommand extends Command {
     // command before it produced any reached stderr only, and a script reading
     // stdout got nothing to parse. A deliberate exit (this.exit) is not an
     // error to report: its JSON, if any, is already written.
-    const json = Boolean(this.argv?.includes('--json'))
+    const mode = outputMode(this.argv)
+    const json = Boolean(mode)
     if (json && !this._jsonWritten && !isExitRequest(err)) {
-      this.json(errorJson(err, describeFailure(err)))
+      if (mode === 'jsonl') {
+        this._jsonWritten = true
+        noteJsonWritten()
+        writeRecord('error', errorJson(err, describeFailure(err)))
+      } else {
+        this.json(errorJson(err, describeFailure(err)))
+      }
     }
     // For a script or a log: one line, whatever stderr's width, and no usage
     // text after a flag error. A person at a terminal gets oclif's own.

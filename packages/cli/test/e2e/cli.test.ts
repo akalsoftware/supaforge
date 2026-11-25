@@ -886,3 +886,35 @@ describe('CLI e2e: errors for scripts', () => {
     expect(json.stderr).not.toContain('USAGE')
   })
 })
+
+describe('CLI e2e: --jsonl', () => {
+  it('a failure before anything runs is one error record, with its code', async () => {
+    const dir = join(tmpdir(), `supaforge-e2e-jsonl-${Date.now()}`)
+    await mkdir(dir, { recursive: true })
+    try {
+      for (const [args, code] of [[['diff', '--jsonl', '--bogus'], 'E_USAGE'], [['diff', '--jsonl'], 'E_CONFIG']] as const) {
+        try {
+          await run([...args], { cwd: dir })
+          expect.unreachable(`${args.join(' ')} should fail`)
+        } catch (err: any) {
+          expect(err.code).toBe(2)
+          const lines = err.stdout.trim().split('\n').map((l: string) => JSON.parse(l))
+          expect(lines.at(-1)).toMatchObject({ type: 'error', code })
+          expect(lines.every((l: { type: string }) => ['start', 'error'].includes(l.type))).toBe(true)
+        }
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('is not taken with --json or --ci', async () => {
+    try {
+      await run(['diff', '--jsonl', '--json'])
+      expect.unreachable('should fail')
+    } catch (err: any) {
+      expect(err.code).toBe(2)
+      expect(err.stderr).toMatch(/cannot also be provided/)
+    }
+  })
+})
