@@ -743,7 +743,7 @@ export function revokesFromAbsent(sql: string): boolean {
 async function retriedWithKeyDeferred(client: pg.Client, guard: DataSyncGuard, sql: string, err: unknown): Promise<boolean> {
   try {
     if (!(await client.query('ROLLBACK TO SAVEPOINT sf_fix').then(() => true, () => false))) return false
-    if (!(await guard.deferSelfReference(sql, err))) return false
+    if (!(await guard.deferForeignKey(sql, err))) return false
     await client.query(thenSavepoint(sql))
     return true
   } catch {
