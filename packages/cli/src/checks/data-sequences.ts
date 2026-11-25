@@ -18,7 +18,9 @@ import type { DriftIssue } from '../types/drift'
 import type { QueryFn } from '../db'
 import { quoteIdent, quoteLiteral, quoteName } from '../utils/sql'
 
+/** A column that draws its ids from a sequence, by its table's position in the list asked about. */
 interface ColumnSequence {
+  t: number
   col: string
 }
 
@@ -40,18 +42,26 @@ const OWNED = (table: string) => `(SELECT d.objid AS seqrelid, d.refobjid AS rel
     JOIN pg_attribute a ON a.attrelid = s.relid AND a.attnum = s.attnum AND NOT a.attisdropped
    WHERE s.relid = to_regclass(${table})`
 
-/** Each serial or identity column of `table`. */
-const SOURCE_SQL = (table: string) => `SELECT DISTINCT a.attname AS col, a.attnum FROM ${OWNED(quoteLiteral(quoteIdent(table)))} ORDER BY a.attnum`
+/**
+ * Each sequence-backed column of each table in $1, by the table's position.
+ * One query for every table: this check was one per table and two per
+ * column, each a round trip.
+ */
+const SOURCE_SQL = `
+  SELECT t.ord::int - 1 AS t, a.col FROM unnest($1::text[]) WITH ORDINALITY t(name, ord)
+   CROSS JOIN LATERAL (SELECT DISTINCT a.attname AS col, a.attnum FROM ${OWNED('t.name')}) a
+   ORDER BY t.ord, a.attnum`
 
 /**
- * The next value the target's sequence for column $2 of table $1 would hand
- * out; no row when the target has no such table or sequence yet (a schema
- * fix will create it). A sequence counting down is left alone.
+ * For each (table $1[i], column $2[i]), the next value the target's sequence
+ * would hand out; no row for one the target has no such table or sequence for
+ * yet (a schema fix will create it). A sequence counting down is left alone.
  */
 const TARGET_SQL = `
-  SELECT q.seqincrement > 0 AS ascending,
+  SELECT p.ord::int - 1 AS i, q.seqincrement > 0 AS ascending,
          (coalesce(pg_sequence_last_value(q.seqrelid) + q.seqincrement, q.seqstart))::text AS next
-    FROM ${OWNED('$1')} AND a.attname = $2`
+    FROM unnest($1::text[], $2::text[]) WITH ORDINALITY p(name, col, ord)
+   CROSS JOIN LATERAL (SELECT q.seqrelid, q.seqincrement, q.seqstart FROM ${OWNED('p.name')} AND a.attname = p.col LIMIT 1) q`
 
 /**
  * The fix: run after the rows, on the target as they leave it. Sets the
@@ -65,31 +75,45 @@ export function sequenceFixSql(table: string, col: string): string {
     + ` AND top >= coalesce(pg_sequence_last_value(q.seqrelid) + q.seqincrement, q.seqstart);`
 }
 
-/** One finding per table with a sequence the synced rows would run into. */
+/**
+ * One finding per table with a sequence the synced rows would run into.
+ * Three queries however many tables: the columns, every column's largest
+ * value on the source, and every sequence's next value on the target.
+ */
 export async function sequenceIssues(
   sourceUrl: string,
   targetUrl: string,
   tables: string[],
   queryFn: QueryFn,
 ): Promise<DriftIssue[]> {
+  if (tables.length === 0) return []
+  const columns = ((await queryFn(sourceUrl, SOURCE_SQL, [tables.map(quoteIdent)])) ?? []) as unknown as ColumnSequence[]
+  if (columns.length === 0) return []
+  const maxSql = columns
+    .map((c, i) => `SELECT ${i} AS i, max(${quoteName(c.col)})::text AS max FROM ${quoteIdent(tables[c.t])}`)
+    .join('\nUNION ALL\n')
+  const maxima = new Map(((await queryFn(sourceUrl, maxSql)) as unknown as Array<{ i: number; max: string | null }>)
+    .map(r => [Number(r.i), r.max]))
+  const targets = new Map(((await queryFn(targetUrl, TARGET_SQL,
+    [columns.map(c => quoteIdent(tables[c.t])), columns.map(c => c.col)])) as unknown as
+    Array<{ i: number; ascending: boolean; next: string }>).map(r => [Number(r.i), r]))
+
   const issues: DriftIssue[] = []
-  for (const table of tables) {
-    const columns = await queryFn(sourceUrl, SOURCE_SQL(table)) as unknown as ColumnSequence[]
+  tables.forEach((table, t) => {
     const behind: string[] = []
     const fixes: string[] = []
-    for (const column of columns) {
-      const [{ max }] = await queryFn(sourceUrl,
-        `SELECT max(${quoteName(column.col)})::text AS max FROM ${quoteIdent(table)}`) as unknown as [{ max: string | null }]
-      if (max === null) continue
-      const [target] = await queryFn(targetUrl, TARGET_SQL, [quoteIdent(table), column.col]) as unknown as
-        Array<{ ascending: boolean; next: string } | undefined>
-      if (target && (!target.ascending || BigInt(target.next) > BigInt(max))) continue
+    columns.forEach((column, i) => {
+      if (column.t !== t) return
+      const max = maxima.get(i)
+      if (max === null || max === undefined) return
+      const target = targets.get(i)
+      if (target && (!target.ascending || BigInt(target.next) > BigInt(max))) return
       behind.push(target
         ? `${column.col} (next ${target.next}, rows up to ${max})`
         : `${column.col} (rows up to ${max}, on a sequence the sync creates)`)
       fixes.push(sequenceFixSql(table, column.col))
-    }
-    if (fixes.length === 0) continue
+    })
+    if (fixes.length === 0) return
     issues.push({
       id: `data-sequence-${table}`,
       check: 'data',
@@ -99,7 +123,7 @@ export async function sequenceIssues(
         + 'The next insert would fail with a duplicate key, so the sequence is moved past them after the rows are written.',
       sql: { up: fixes.join('\n'), down: '' },
     })
-  }
+  })
   return issues
 }
 
