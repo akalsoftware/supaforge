@@ -81,7 +81,7 @@ describe('CLI e2e: diff', () => {
     }
   })
 
-  it('--json aborts with JSON, and exit 1, when a database is unreachable', async () => {
+  it('--json aborts with JSON, and exit 2, couldn\'t run, when a database is unreachable', async () => {
     // It used to skip the reachability check and scan anyway: every check that
     // read nothing from the source reported the target's objects as extra, and
     // --apply dropped them.
@@ -102,9 +102,11 @@ describe('CLI e2e: diff', () => {
         await run(args, { cwd: tmpDir })
         expect.unreachable(`${args.join(' ')} should exit non-zero`)
       } catch (err: any) {
-        expect(err.code).toBe(1)
+        // 2, not 1: 1 is drift found, and a script could not tell the two apart.
+        expect(err.code).toBe(2)
         const parsed = JSON.parse(err.stdout)
         expect(parsed.error).toMatch(/Diff aborted — Source not reachable/)
+        expect(parsed.code).toBe('E_CONNECT')
         expect(parsed.preflight.map((c: any) => c.passed)).toEqual([false, false])
         expect(err.stdout).not.toContain('tip:')
       }
@@ -824,5 +826,63 @@ describe('CLI e2e: --json when the database cannot be reached', () => {
         expect(err.stdout).not.toContain('secret')
       }
     }
+  })
+})
+
+/**
+ * Errors for a script or a log collector: with stderr not a terminal (as it
+ * is not here), each failure is one line, `Error: <message>`, never wrapped
+ * and never followed by the usage text; under --json, stdout carries
+ * `{ error, code }`. A database that can't be reached exits 2, couldn't run,
+ * in every mode, not 1, which is drift found.
+ */
+describe('CLI e2e: errors for scripts', () => {
+  let dir: string
+  const failure = async (args: string[], cwd: string) => {
+    try {
+      await run(args, { cwd })
+    } catch (err: any) {
+      return err as { code: number; stdout: string; stderr: string }
+    }
+    throw new Error(`${args.join(' ')} should have failed`)
+  }
+  const LONG = 'x'.repeat(150)
+
+  beforeAll(async () => {
+    dir = join(tmpdir(), `supaforge-e2e-errors-${Date.now()}`)
+    await mkdir(join(dir, 'none'), { recursive: true })
+    await mkdir(join(dir, 'invalid'), { recursive: true })
+    await mkdir(join(dir, 'unreachable'), { recursive: true })
+    await writeFile(join(dir, 'invalid', 'supaforge.config.json'), JSON.stringify({ source: 'a', target: 'b', environments: { a: { dbUrl: '' } } }))
+    await writeFile(join(dir, 'unreachable', 'supaforge.config.json'), JSON.stringify({
+      source: 'a', target: 'b',
+      environments: { a: { dbUrl: `postgresql://u:secret@127.0.0.1:1/${LONG}` }, b: { dbUrl: 'postgresql://u:secret@127.0.0.1:2/b' } },
+    }))
+  })
+  afterAll(async () => { await rm(dir, { recursive: true, force: true }) })
+
+  it.each([
+    ['an unknown flag', 'none', ['diff', `--bogus-${LONG}`], 2, 'E_USAGE', /^Error: Nonexistent flag: --bogus-x+$/],
+    ['a value not among the options', 'none', ['diff', '--check=nope'], 2, 'E_USAGE', /^Error: Expected --check=nope to be one of: schema, .*partitions$/],
+    ['an unknown command', 'none', ['frobnicate'], 2, 'E_USAGE', /^Error: command frobnicate not found$/],
+    ['no config', 'none', ['diff'], 2, 'E_CONFIG', /^Error: Could not load supaforge\.config\.json/],
+    ['an invalid config, its problems on the one line', 'invalid', ['diff'], 2, 'E_CONFIG', /^Error: Invalid configuration: .+; .+; .+$/],
+    ['a database it cannot reach', 'unreachable', ['diff'], 2, 'E_CONNECT', /^Error: Diff aborted — Source not reachable: .*; Target not reachable: /],
+  ])('%s: one line on stderr', async (_what, sub, args, exit, code, line) => {
+    const plain = await failure(args as string[], join(dir, sub as string))
+    expect(plain.code).toBe(exit)
+    const lines = plain.stderr.trimEnd().split('\n')
+    expect(lines, plain.stderr).toHaveLength(1)
+    expect(lines[0]).toMatch(line as RegExp)
+    expect(plain.stderr).not.toContain('›')
+    expect(plain.stderr).not.toContain('secret')
+
+    const json = await failure([...(args as string[]), '--json'], join(dir, sub as string))
+    expect(json.code).toBe(exit)
+    const parsed = JSON.parse(json.stdout)
+    expect(parsed.code).toBe(code)
+    expect(parsed.error).not.toMatch(/\n|See more help/)
+    expect(json.stdout).not.toContain('secret')
+    expect(json.stderr).not.toContain('USAGE')
   })
 })

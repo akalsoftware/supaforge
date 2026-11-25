@@ -153,6 +153,11 @@ Useful `diff` flags:
   without them. Roles belong to the whole server, not one database, so a role
   only the target has is dropped only with `--allow-destructive`, and one
   that can log in is never dropped for you.
+- **`--tables` scope.** Only the selected tables' fixes run, with what they
+  need: a type a column uses, a function a trigger calls, and grants and
+  comments on those. A fix that touches a table `--tables` leaves out, or
+  touches none and isn't needed, such as a new unrelated function or default
+  privileges, is skipped with the reason.
 - **Dependency order.** Fixes run in dependency order: functions before the
   triggers that call them, columns before their indexes, drops last. A changed
   object that has to be dropped and recreated is a single fix.
@@ -167,11 +172,19 @@ Useful `diff` flags:
   triggers on those tables are held off while their rows are synced and put
   back before commit, so an `updated_at` or audit trigger doesn't rewrite
   what was copied, and a webhook doesn't fire once per row. A trigger set
-  `ENABLE ALWAYS` still fires. A row that needs one written after it in the
-  same table, such as a node moved under a newer one, is checked against the
-  table's foreign key at the end instead, and an orphan still rolls
-  everything back. Both need the connecting role to own the table; when it
+  `ENABLE ALWAYS` still fires. Rows are written in the order the source's
+  foreign keys need, a referenced table's before those referencing it, and
+  deleted the other way round. A row that needs one written after it, in the
+  same table (a node moved under a newer one) or in tables that reference each
+  other, is checked against that foreign key at the end instead, and an
+  orphan still rolls everything back. Both need the connecting role to own the table; when it
   doesn't, the triggers fire and the run says so.
+- **Rows in batches.** A table's rows to insert, update or delete are one
+  finding, `data-insert-public.plans`, of up to a thousand rows, sent to the
+  target in one round trip; a table with more continues in
+  `data-insert-public.plans:2` and on. So a large sync is a short report and
+  quick over a slow link, and `--only='data-*-public.plans*'` picks one
+  table's rows.
 - **Sequences follow the rows.** After syncing rows, each serial or identity
   sequence on those tables is moved past the largest id, so the app's next
   insert doesn't collide with a synced row. A sequence is only ever moved
@@ -306,6 +319,13 @@ supaforge migrate run --env=prod --apply
   already in the environment win.
 - **Single database.** A config with a single environment and no
   `source`/`target` is fine. Use `snapshot`, `clone` and `restore`.
+- **TLS.** A `dbUrl`'s `sslmode` means what it means to `psql`, for every
+  connection SupaForge makes, DBDiff's and `pg_dump`'s included. Without one,
+  the connection is encrypted when the server offers TLS, and a warning says
+  so when a server elsewhere doesn't. `sslmode=require` encrypts without
+  checking who answered. `sslmode=verify-full&sslrootcert=<file>` checks it:
+  for a hosted Supabase project, against the CA it offers for download in its
+  database settings.
 
 | Environment variable | Default | Purpose |
 | --- | --- | --- |
@@ -365,10 +385,24 @@ npx @akal/supaforge diff --ci
 | --- | --- |
 | `0` | Did what was asked, including when there was nothing to do |
 | `1` | Found drift, declined to act, or something failed or was left out |
-| `2` | Couldn't run: a usage error, or under `--ci` a check that couldn't finish |
+| `2` | Couldn't run: a usage or config error, a database it couldn't reach, or under `--ci` a check that couldn't finish |
 
 `--ci` fails on critical drift by default. Set the threshold with
 `--fail-on=warning` or `--fail-on=any`.
+
+When stderr isn't a terminal, as in CI or a log collector, an error is one
+line, `Error: <message>`, never wrapped or followed by the usage text. Under
+`--json`, stdout carries it as `{ "error": "...", "code": "..." }`, with a
+code that stays the same whatever the wording:
+
+| Code | Meaning |
+| --- | --- |
+| `E_USAGE` | The command line: an unknown flag, command or value |
+| `E_CONFIG` | `supaforge.config.json` is missing, unreadable or invalid |
+| `E_CONNECT` | A database couldn't be reached, or refused the login |
+| `E_TLS` | A database's certificate couldn't be verified |
+| `E_PRECONDITION` | Something the command needs first is missing, such as a client tool |
+| `E_FAILED` | Anything else that stopped the command |
 
 ## MCP (AI agents)
 
@@ -406,13 +440,16 @@ The server exposes these tools:
 | --- | --- | --- |
 | `list_environments` | The environments in the config, without their credentials | Read-only |
 | `diff` | Every difference, with the plan `sync` would run | Read-only |
-| `get_check_result` | One check's result from the last `diff` or `sync` | Read-only |
+| `get_check_result` | One check's result from the last `diff` or `sync`, or with `issueId` one finding whole | Read-only |
 | `sync` | Runs the plan on the target; `prove: true` rehearses it on a copy first | Destructive |
 | `create_migration` | Writes the drift as a migration file, as `migrate create` does | Writes files |
 | `take_snapshot` | Snapshots an environment to local files | Writes files |
 
 `diff` and `sync` take the same arguments, so the plan an agent shows you is
-the plan that runs. Fixes that drop tables or columns are held back unless
+the plan that runs. Results are sized for an agent to read: long SQL, such as
+a batch of rows, keeps its start and says how much is left out, and a very
+large result shortens its lists too, saying so. Ids, titles and counts are
+never cut. Fixes that drop tables or columns are held back unless
 `allowDestructive` is set.
 
 It reads `supaforge.config.json` in the directory given by `--project` (or the

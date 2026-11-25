@@ -1,5 +1,6 @@
 import pg from 'pg'
 import { DB_CONNECT_TIMEOUT_MS } from './constants.js'
+import { pgSsl, pgUrl, resolvePgSsl, tlsSettings } from './tls.js'
 
 export type QueryFn = (dbUrl: string, sql: string, params?: unknown[]) => Promise<Record<string, unknown>[]>
 
@@ -27,16 +28,63 @@ export function resolveConnectTimeoutMs(): number {
  * Every client in the codebase goes through here so none can be constructed
  * without one. `queryTimeoutMs` is opt-in: it belongs on short probes, not on
  * a migration or restore that is legitimately slow.
+ *
+ * TLS is set here too, from the URL with libpq's meanings (tls.ts): the URL
+ * `pg` is given has no TLS parameter left for it to read its own way.
  */
-export function pgClientConfig(dbUrl: string, queryTimeoutMs?: number): pg.ClientConfig {
-  const config: pg.ClientConfig = {
-    connectionString: dbUrl,
+export function pgClientConfig(dbUrl: string, queryTimeoutMs?: number): TlsClientConfig {
+  const { mode } = tlsSettings(dbUrl)
+  const config: TlsClientConfig = {
+    connectionString: pgUrl(dbUrl),
     connectionTimeoutMillis: resolveConnectTimeoutMs(),
+    // Where the server decides (prefer, allow), TlsClient asks it on connecting.
+    ssl: mode === 'prefer' || mode === 'allow' ? false : pgSsl(dbUrl),
+    tlsFrom: dbUrl,
   }
   if (queryTimeoutMs !== undefined) {
     config.query_timeout = queryTimeoutMs
   }
   return config
+}
+
+/** pg's config, with the URL as written, for TlsClient to decide TLS from. */
+export type TlsClientConfig = pg.ClientConfig & { tlsFrom?: string }
+
+/**
+ * A `pg.Client` that settles TLS as it connects: where the URL's sslmode
+ * leaves it to the server, by asking the server (tls.ts). A pool makes its
+ * connections with this too, so every connection SupaForge opens, to a URL
+ * the preflight checked or one made from it (a clone's database), gets the
+ * same answer.
+ *
+ * `ssl` is read by pg when the client connects, from the client and from its
+ * Connection, both set in the constructor; it is set on both before then.
+ */
+export class TlsClient extends pg.Client {
+  private readonly tlsFrom?: string
+
+  constructor(config: TlsClientConfig = {}) {
+    super(config)
+    this.tlsFrom = config.tlsFrom
+  }
+
+  override connect(): Promise<pg.Client>
+  override connect(callback: ((err: Error) => void) | ((err: null, c: pg.Client) => void)): void
+  override connect(callback?: ((err: Error) => void) | ((err: null, c: pg.Client) => void)): Promise<pg.Client> | void {
+    const url = this.tlsFrom
+    const ready = url
+      ? resolvePgSsl(url, resolveConnectTimeoutMs()).then(ssl => {
+        const self = this as unknown as { ssl: unknown; connection: { ssl: unknown } }
+        self.ssl = ssl
+        self.connection.ssl = ssl
+      })
+      : Promise.resolve()
+    if (callback) {
+      ready.then(() => super.connect(callback), (err: Error) => (callback as (err: Error) => void)(err))
+      return
+    }
+    return ready.then(() => super.connect())
+  }
 }
 
 /**
@@ -50,7 +98,7 @@ export function pgClientConfig(dbUrl: string, queryTimeoutMs?: number): pg.Clien
  * and reports it, so swallowing the event loses nothing.
  */
 export function newPgClient(dbUrl: string, queryTimeoutMs?: number): pg.Client {
-  const client = new pg.Client(pgClientConfig(dbUrl, queryTimeoutMs))
+  const client = new TlsClient(pgClientConfig(dbUrl, queryTimeoutMs))
   client.on('error', () => undefined)
   return client
 }
@@ -82,7 +130,7 @@ export const PINNED_OUTPUT = "SET extra_float_digits = 3; SET bytea_output = hex
  * `pinned`: set PINNED_OUTPUT on each connection.
  */
 export function newPgPool(config: pg.PoolConfig, pinned = true): pg.Pool {
-  const pool = new pg.Pool(config)
+  const pool = new pg.Pool({ ...config, Client: TlsClient })
   pool.on('error', () => undefined)
   pool.on('connect', client => {
     client.on('error', () => undefined)

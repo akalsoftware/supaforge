@@ -91,6 +91,8 @@ export interface DriftIssue {
   sourceValue?: unknown
   targetValue?: unknown
   sql?: { up: string; down: string }
+  /** A data finding's number of rows: its fix writes them all, in one round trip. */
+  rows?: number
   /** API-based sync action (for non-SQL fixes like storage buckets, auth config, edge functions). */
   action?: SyncAction
   /**

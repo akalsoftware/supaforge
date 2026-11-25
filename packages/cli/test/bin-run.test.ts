@@ -17,4 +17,23 @@ describe('bin/run.js', () => {
     expect(stderr).not.toMatch(/unsettled top-level await/)
     expect(code).toBe(0)
   })
+
+  // What runs when the package is installed: not bin/dev.js, which the other
+  // CLI tests use. A failure before any command, for a script.
+  it('says an unknown command in one line, and as JSON under --json', async () => {
+    const out = async (args: string[]) => {
+      const child = spawn(process.execPath, [bin, ...args], {stdio: ['ignore', 'pipe', 'pipe']})
+      let stdout = ''
+      let stderr = ''
+      child.stdout.on('data', (chunk) => (stdout += chunk))
+      child.stderr.on('data', (chunk) => (stderr += chunk))
+      const code = await new Promise<number | null>((resolve) => child.on('close', resolve))
+      return {code, stdout, stderr}
+    }
+    const plain = await out(['frobnicate'])
+    expect(plain.code).toBe(2)
+    expect(plain.stderr).toBe('Error: command frobnicate not found\n')
+    const json = await out(['frobnicate', '--json'])
+    expect(JSON.parse(json.stdout)).toEqual({error: 'command frobnicate not found', code: 'E_USAGE'})
+  })
 })

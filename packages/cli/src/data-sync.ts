@@ -47,22 +47,24 @@ interface TableFacts {
   rel: string
   owned: boolean
   triggers: string[]
-  selfKeys: Array<{ name: string; qualified: string }>
 }
+
+/** A foreign key by its table and name: where it is, whether this role may alter it, whether it is the table's own. */
+const KEY_SQL = `
+  SELECT c.oid::regclass::text AS rel, quote_ident(n.nspname) || '.' || quote_ident(k.conname) AS qualified,
+         pg_has_role(c.relowner, 'MEMBER') AS owned, k.conrelid = k.confrelid AS self
+    FROM pg_constraint k JOIN pg_class c ON c.oid = k.conrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+   WHERE k.contype = 'f' AND NOT k.condeferrable AND c.relname = $2 AND k.conname = $3
+     AND ($1::text IS NULL OR n.nspname = $1)
+   LIMIT 1`
 
 const FACTS_SQL = `
   SELECT c.oid::regclass::text AS rel,
          pg_has_role(c.relowner, 'MEMBER') AS owned,
          coalesce((SELECT json_agg(t.tgname ORDER BY t.tgname) FROM pg_trigger t
                     WHERE t.tgrelid = c.oid AND NOT t.tgisinternal AND t.tgconstraint = 0
-                      AND t.tgenabled = 'O'), '[]') AS triggers,
-         coalesce((SELECT json_agg(json_build_object('name', k.conname,
-                                     'qualified', quote_ident(n.nspname) || '.' || quote_ident(k.conname))
-                                   ORDER BY k.conname)
-                     FROM pg_constraint k
-                    WHERE k.conrelid = c.oid AND k.confrelid = c.oid AND k.contype = 'f'
-                      AND NOT k.condeferrable), '[]') AS "selfKeys"
-    FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                      AND t.tgenabled = 'O'), '[]') AS triggers
+    FROM pg_class c
    WHERE c.oid = to_regclass($1)`
 
 /** One apply's data fixes: what it held off, and what it must put back before commit. */
@@ -80,43 +82,51 @@ export class DataSyncGuard {
   constructor(private readonly client: Pick<pg.Client, 'query'>) {}
 
   /** Before a data fix: hold off the triggers of the table it writes, once per table. */
-  async before(sql: string): Promise<void> {
+  /** True when it held triggers off, and so changed the target. */
+  async before(sql: string): Promise<boolean> {
     const name = writtenTable(sql)
-    if (!name || this.tables.has(name)) return
+    if (!name || this.tables.has(name)) return false
     const facts = await this.factsFor(name)
     this.tables.set(name, facts)
-    if (!facts || facts.triggers.length === 0) return
+    if (!facts || facts.triggers.length === 0) return false
     const list = facts.triggers.map(t => `"${t}"`).join(', ')
     if (!facts.owned) {
       this.warnings.push(`Triggers on ${facts.rel} fired as its rows were synced (${list}): the connecting role does not `
         + 'own the table, so they could not be held off, and what they write may differ from the source.')
-      return
+      return false
     }
     for (const trigger of facts.triggers) {
       await this.client.query(`ALTER TABLE ${facts.rel} DISABLE TRIGGER ${quoteName(trigger)}`)
       this.reenable.push(`ALTER TABLE ${facts.rel} ENABLE TRIGGER ${quoteName(trigger)}`)
     }
     this.notes.push(`Held off ${facts.triggers.length === 1 ? 'trigger' : 'triggers'} ${list} on ${facts.rel} while its rows were synced.`)
+    return true
   }
 
   /**
-   * After a data fix failed with `err`: true when the failure was the table's
-   * own foreign key and it is now deferred, so the fix can be tried again.
+   * After a data fix failed with `err`: true when the failure was a foreign
+   * key between rows this apply writes and it is now deferred, so the fix can
+   * be tried again. A table's own key (a node moved under a newer one), or one
+   * between tables that reference each other in a cycle, which no order of
+   * tables satisfies. The key is found from the error: the table that holds
+   * it, which for a delete is not the table the fix writes. It must be one
+   * the connecting role owns, and not deferrable already.
    */
-  async deferSelfReference(sql: string, err: unknown): Promise<boolean> {
-    if ((err as { code?: unknown } | null)?.code !== FOREIGN_KEY_VIOLATION) return false
-    const name = writtenTable(sql)
-    const facts = name ? this.tables.get(name) : undefined
-    if (!facts?.owned) return false
-    const constraint = (err as { constraint?: unknown }).constraint
-    const key = facts.selfKeys.find(k => k.name === constraint)
-    if (!key || this.deferred.has(key.qualified)) return false
-    await this.client.query(`ALTER TABLE ${facts.rel} ALTER CONSTRAINT ${quoteName(key.name)} DEFERRABLE INITIALLY DEFERRED`)
+  async deferForeignKey(sql: string, err: unknown): Promise<boolean> {
+    const e = err as { code?: unknown; schema?: unknown; table?: unknown; constraint?: unknown } | null
+    if (e?.code !== FOREIGN_KEY_VIOLATION || typeof e.constraint !== 'string' || typeof e.table !== 'string') return false
+    const written = writtenTable(sql)
+    if (!written) return false
+    const { rows: [key] } = await this.client.query<{ rel: string; qualified: string; owned: boolean; self: boolean }>(KEY_SQL,
+      [typeof e.schema === 'string' ? e.schema : null, e.table, e.constraint])
+    if (!key?.owned || this.deferred.has(key.qualified)) return false
+    await this.client.query(`ALTER TABLE ${key.rel} ALTER CONSTRAINT ${quoteName(e.constraint)} DEFERRABLE INITIALLY DEFERRED`)
     this.deferred.add(key.qualified)
     this.checks.push(`SET CONSTRAINTS ${key.qualified} IMMEDIATE`,
-      `ALTER TABLE ${facts.rel} ALTER CONSTRAINT ${quoteName(key.name)} NOT DEFERRABLE`)
-    this.notes.push(`Checked ${facts.rel}'s rows against its own foreign key "${key.name}" once all were written: `
-      + 'a row needed one written after it.')
+      `ALTER TABLE ${key.rel} ALTER CONSTRAINT ${quoteName(e.constraint)} NOT DEFERRABLE`)
+    this.notes.push(key.self
+      ? `Checked ${key.rel}'s rows against its own foreign key "${e.constraint}" once all were written: a row needed one written after it.`
+      : `Checked ${key.rel}'s rows against its foreign key "${e.constraint}" once all were written: rows of tables that reference each other needed each other.`)
     return true
   }
 
