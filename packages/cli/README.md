@@ -317,6 +317,13 @@ supaforge migrate run --env=prod --apply
   already in the environment win.
 - **Single database.** A config with a single environment and no
   `source`/`target` is fine. Use `snapshot`, `clone` and `restore`.
+- **TLS.** A `dbUrl`'s `sslmode` means what it means to `psql`, for every
+  connection SupaForge makes, DBDiff's and `pg_dump`'s included. Without one,
+  the connection is encrypted when the server offers TLS, and a warning says
+  so when a server elsewhere doesn't. `sslmode=require` encrypts without
+  checking who answered. `sslmode=verify-full&sslrootcert=<file>` checks it:
+  for a hosted Supabase project, against the CA it offers for download in its
+  database settings.
 
 | Environment variable | Default | Purpose |
 | --- | --- | --- |

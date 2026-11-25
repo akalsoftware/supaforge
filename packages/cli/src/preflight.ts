@@ -3,7 +3,7 @@ import { detectRuntime } from './local-pg.js'
 import { resolveConnectTimeoutMs, newPgClient } from './db.js'
 import { DB_PROBE_TIMEOUT_MS } from './constants.js'
 import { ok, warn, dim, cmd, bold } from './ui.js'
-import { redactUrls, describeFailure } from './utils/error.js'
+import { redactUrls, describeFailure, tlsFailureMessage } from './utils/error.js'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -82,7 +82,8 @@ export async function checkConnection(dbUrl: string): Promise<ConnCheckResult> {
   } catch (err) {
     return {
       reachable: false,
-      error: describeTimeout(describeFailure(err), connectTimeoutMs, DB_PROBE_TIMEOUT_MS),
+      // A certificate failure says what it is and what to do about it.
+      error: tlsFailureMessage(err, dbUrl) ?? describeTimeout(describeFailure(err), connectTimeoutMs, DB_PROBE_TIMEOUT_MS),
     }
   } finally {
     // A client that timed out mid-handshake still holds an open socket, which
