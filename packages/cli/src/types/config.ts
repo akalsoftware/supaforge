@@ -61,7 +61,15 @@ export interface ChecksConfig {
    * excluding more is never the surprising direction.
    */
   excludeTables?: string[]
-  data?: { tables: string[] }
+  data?: {
+    tables: string[]
+    /**
+     * Sequences of their own — no column owns one or takes its default from
+     * it, an invoice number say — to move forward on the target to where the
+     * source's is. Names, `schema.name` or globs. Others are reported only.
+     */
+    sequences?: string[]
+  }
   migrations?: {
     dir?: string
     /**

@@ -185,10 +185,15 @@ Useful `diff` flags:
   `data-insert-public.plans:2` and on. So a large sync is a short report and
   quick over a slow link, and `--only='data-*-public.plans*'` picks one
   table's rows.
-- **Sequences follow the rows.** After syncing rows, each serial or identity
-  sequence on those tables is moved past the largest id, so the app's next
-  insert doesn't collide with a synced row. A sequence is only ever moved
-  forward, and one left behind by an earlier sync is reported too.
+- **Sequences follow the rows.** After syncing rows, each sequence those
+  tables take ids from, a serial or identity column's or one a column's
+  default calls (shared by several tables, say), is moved past the largest id,
+  so the app's next insert doesn't collide with a synced row. A sequence is
+  only ever moved forward, and one left behind by an earlier sync is reported
+  too. A sequence of its own, such as an invoice number the app counts
+  itself, is reported when the source has counted further, and moved forward
+  to the source's only if `checks.data.sequences` names it: nothing in the
+  rows says where it belongs, and moving it leaves a gap in the series.
 - **`--prove`.** The fixes are replayed on a copy of the target's structure,
   made on the target's own server, the way the apply will run them, with a
   sample of each table's rows. Nothing is applied unless the result matches
@@ -308,6 +313,7 @@ supaforge migrate run --env=prod --apply
 | `source`, `target` | What to compare: the source is the truth, the target gets fixed |
 | `ignoreSchemas` | Schemas of your own to leave out |
 | `checks.data.tables` | Tables whose rows are compared and snapshotted |
+| `checks.data.sequences` | Sequences of their own (no column uses them) to move forward with the source's; names or globs |
 | `checks.exclude` | Checks never to run (merged with `--skip`) |
 | `checks.tables`, `checks.excludeTables` | Default scope for the schema and data checks |
 | `checks.migrations.dir`, `checks.migrations.mode` | Where migrations live and how the history check reports |
