@@ -1,6 +1,6 @@
 {
   "name": "@akal/supaforge",
-  "version": "0.0.49",
+  "version": "0.0.50",
   "mcpName": "io.github.akalsoftware/supaforge",
   "description": "Diff, sync and clone Supabase and Postgres environments - schema, data, RLS, grants, storage, auth, Edge Functions, cron and more - and prove every change before it reaches production",
   "keywords": [
