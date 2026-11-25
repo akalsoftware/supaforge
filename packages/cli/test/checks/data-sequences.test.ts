@@ -7,17 +7,42 @@ import { statementPhase, PHASE } from '../../src/sql-deps.js'
 import type { QueryFn } from '../../src/db.js'
 import type { ScanResult } from '../../src/types/drift.js'
 
-/** Answers the source's column list, its max, and the target's next value. */
+/** Answers the source's column list, its max, and the target's next value, for one table's id column. */
 function fake(opts: { max: string | null; target?: { ascending: boolean; next: string } }): QueryFn {
   return async (url, sql) => {
-    if (url === 'src' && sql.includes('pg_depend')) return [{ col: 'id' }]
-    if (url === 'src' && sql.includes('max(')) return [{ max: opts.max }]
-    if (url === 'tgt') return opts.target ? [opts.target] : []
+    if (url === 'src' && sql.includes('pg_depend')) return [{ t: 0, col: 'id' }]
+    if (url === 'src' && sql.includes('max(')) return [{ i: 0, max: opts.max }]
+    if (url === 'tgt') return opts.target ? [{ i: 0, ...opts.target }] : []
     return []
   }
 }
 
 describe('sequenceIssues', () => {
+  it('asks three queries however many tables, and keeps each column with its own table', async () => {
+    const calls: Array<{ url: string; sql: string; params?: unknown[] }> = []
+    const queryFn: QueryFn = async (url, sql, params) => {
+      calls.push({ url, sql, params })
+      if (url === 'src' && sql.includes('pg_depend')) return [{ t: 0, col: 'id' }, { t: 2, col: 'id' }, { t: 2, col: 'other' }]
+      if (url === 'src' && sql.includes('max(')) return [{ i: 0, max: '5' }, { i: 1, max: '9' }, { i: 2, max: '1' }]
+      if (url === 'tgt') return [{ i: 0, ascending: true, next: '6' }, { i: 1, ascending: true, next: '2' }, { i: 2, ascending: true, next: '1' }]
+      return []
+    }
+    const issues = await sequenceIssues('src', 'tgt', ['a', 'b', 'c'], queryFn)
+    expect(calls).toHaveLength(3)
+    expect(calls[0].params).toEqual([['"a"', '"b"', '"c"']])
+    expect(calls[2].params).toEqual([['"a"', '"c"', '"c"'], ['id', 'id', 'other']])
+    expect(issues.map(i => [i.id, i.description.match(/\w+ \(next \d+/g)])).toEqual([['data-sequence-c', ['id (next 2', 'other (next 1']]])
+  })
+
+  it('asks nothing for no tables, and nothing more for tables without sequences', async () => {
+    let n = 0
+    const queryFn: QueryFn = async () => { n++; return [] }
+    expect(await sequenceIssues('src', 'tgt', [], queryFn)).toEqual([])
+    expect(n).toBe(0)
+    expect(await sequenceIssues('src', 'tgt', ['a'], queryFn)).toEqual([])
+    expect(n).toBe(1)
+  })
+
   it('reports a sequence whose next value is at or below the source\'s largest id', async () => {
     const [issue] = await sequenceIssues('src', 'tgt', ['plans'], fake({ max: '3', target: { ascending: true, next: '1' } }))
     expect(issue.id).toBe('data-sequence-plans')
