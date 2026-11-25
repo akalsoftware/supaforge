@@ -23,6 +23,7 @@ import { redactUrls, describeFailure } from '../utils/error.js'
 import { openSchemaDir } from '../schema-dir.js'
 import { preflightCode } from '../utils/error-report.js'
 import { printJson } from '../utils/json-stream.js'
+import { JSONL_SCHEMA, writeRecord } from '../utils/jsonl.js'
 
 
 /** The source environment a --source-dir run compares from. */
@@ -206,7 +207,11 @@ export default class Diff extends BaseCommand {
       description: 'Never compare these tables (repeatable, comma-separated, globs allowed). Merged with checks.excludeTables.',
       multiple: true,
     }),
-    json: Flags.boolean({ description: 'Output results as JSON' }),
+    json: Flags.boolean({ description: 'Output results as JSON', exclusive: ['jsonl'] }),
+    jsonl: Flags.boolean({
+      description: 'Output results as JSON Lines: a record per line, each check\'s as it finishes',
+      exclusive: ['json', 'ci'],
+    }),
     source: Flags.string({ char: 's', description: 'Source environment name' }),
     target: Flags.string({ char: 't', description: 'Target environment name' }),
     ci: Flags.boolean({
@@ -304,6 +309,12 @@ export default class Diff extends BaseCommand {
 
   async run(): Promise<void> {
     const { flags } = await this.parse(Diff)
+    // --jsonl is --json written a record a line: every quiet path --json takes
+    // it takes too, and the result is written as records (BaseCommand.json).
+    if (flags.jsonl) {
+      flags.json = true
+      writeRecord('start', { schema: JSONL_SCHEMA, command: this.id ?? 'diff', apply: Boolean(flags.apply), timestamp: new Date().toISOString() })
+    }
 
     // On stderr, so a --json or --ci consumer still gets clean stdout while a
     // human is told the flag did nothing.
@@ -370,6 +381,15 @@ export default class Diff extends BaseCommand {
 
     /** Build a progress callback for scan calls. Only active when not --json or --ci. */
     const makeProgress = (): ((event: ScanProgressEvent) => void) | undefined => {
+      if (flags.jsonl) {
+        return (event: ScanProgressEvent) => {
+          if (event.phase !== 'check:done') return
+          writeRecord('check', {
+            check: event.check, status: event.status, issues: event.issueCount, durationMs: event.durationMs,
+            ...(event.skipReason ? { skipReason: event.skipReason } : {}),
+          })
+        }
+      }
       if (flags.json || flags.ci) return undefined
       process.stdout.write('\n  Scanning...\n')
       return (event: ScanProgressEvent) => {

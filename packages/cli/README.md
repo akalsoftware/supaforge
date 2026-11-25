@@ -137,6 +137,7 @@ Useful `diff` flags:
 | `--no-transaction` | Apply fix by fix, keeping what works. Synced rows then fire the target's triggers |
 | `--no-snapshot` | Read each query on its own. By default each database is read as of one instant, so a change made while the scan runs is seen by all of it or none; as with `pg_dump`, what it reads stays locked until the scan ends |
 | `--json` / `--ci` | Machine-readable output; CI annotations and exit codes |
+| `--jsonl` | The same as JSON Lines: a record per line, each check's as it finishes (see [CI](#ci-and-exit-codes)) |
 
 ## Applying fixes safely
 
@@ -409,6 +410,14 @@ code that stays the same whatever the wording:
 | `E_TLS` | A database's certificate couldn't be verified |
 | `E_PRECONDITION` | Something the command needs first is missing, such as a client tool |
 | `E_FAILED` | Anything else that stopped the command |
+
+`diff --jsonl` writes the result as JSON Lines, for a consumer that reads a
+stream rather than one document. Every record has a `type`: `start` first
+(with `schema`, the record format's version, now 1), a `check` as each check
+finishes, then an `issue` per finding, or under `--apply` an `applied`,
+`skipped`, `failed`, `rolled-back`, `note` or `warning` per outcome, and
+`result` last, with the scores and counts. A run that can't go on ends with an
+`error` record carrying its code.
 
 ## MCP (AI agents)
 
