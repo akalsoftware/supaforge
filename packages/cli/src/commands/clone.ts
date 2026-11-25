@@ -25,6 +25,7 @@ import { DEFAULT_IGNORE_SCHEMAS, CLONE_SKIP_FLAGS } from '../defaults.js'
 import { CLONE_EXTRA_EXCLUDE_SCHEMAS, SUPAFORGE_DIR, MIGRATIONS_SUBDIR } from '../constants.js'
 import { errMsg, redactUrls } from '../utils/error.js'
 import type { SupaForgeConfig } from '../types/config.js'
+import { preflightCode } from '../utils/error-report.js'
 
 /** Combined list of schemas to exclude from pg_dump when cloning. */
 // De-duplicated: `_realtime` is in both lists, so it was excluded — and
@@ -267,7 +268,7 @@ export default class Clone extends BaseCommand {
     }
 
     if (!report.passed) {
-      this.error('Clone aborted — fix the issues above first.', { exit: 1 })
+      this.error('Clone aborted — fix the issues above first.', { exit: 2, code: preflightCode(report.checks.filter(c => !c.passed)) })
     }
 
     // Execute clone

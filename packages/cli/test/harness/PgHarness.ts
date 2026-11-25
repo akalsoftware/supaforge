@@ -308,6 +308,29 @@ export class PgHarness {
     ], script);
   }
 
+  /**
+   * Turn TLS on for a role's server with this certificate (chain first) and
+   * key, by reload. Written into the data directory as the server's own user,
+   * since PostgreSQL refuses a key file another user owns. `only`: TCP
+   * connections must use TLS (`hostssl`), so one that does not is refused.
+   */
+  async enableTls(role: Role, files: { cert: string; key: string }, opts: { only?: boolean } = {}): Promise<void> {
+    const write = (name: string, body: string) => this.rtStdin([
+      'exec', '-i', '-u', 'postgres', this.name(role),
+      'sh', '-c', `umask 077 && cat > "$PGDATA/${name}"`,
+    ], body);
+    await write('server.crt', files.cert);
+    await write('server.key', files.key);
+    if (opts.only) {
+      await this.rt([
+        'exec', '-u', 'postgres', this.name(role), 'sh', '-c',
+        String.raw`sed -i 's/^host\([[:space:]]\)/hostssl\1/' "$PGDATA/pg_hba.conf"`,
+      ]);
+    }
+    await this.sql(role, `ALTER SYSTEM SET ssl = on`);
+    await this.sql(role, `SELECT pg_reload_conf()`);
+  }
+
   /** libpq connection string for another database on a role's server. */
   urlFor(role: Role, database: string): string {
     return this.connectionString(role).replace(/\/[^/]*$/, `/${database}`);

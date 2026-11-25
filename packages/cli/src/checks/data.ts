@@ -1,5 +1,6 @@
 import type { DriftIssue } from '../types/drift'
-import { dataScope, runDbDiff, sqlToIssues, type DbDiffOptions } from '../dbdiff'
+import { dataScope, runDbDiff, type DbDiffOptions } from '../dbdiff'
+import { splitStatements } from '../dbdiff-output'
 import { DEFAULT_IGNORE_SCHEMAS } from '../defaults'
 import { filterChangedTables } from '../checksum'
 import type { QueryFn } from '../db'
@@ -8,6 +9,15 @@ import { Check, CheckSkipped, type CheckContext } from './base'
 import { applyTableFilter } from '../utils/table-filter'
 import { counterIssues, sequenceIssues } from './data-sequences'
 import { matchesGlob } from '../utils/strings'
+import { dataIssues, inForeignKeyOrder, type ForeignKeyEdge } from './data-groups'
+
+/** The source's foreign keys between tables, as `schema.table` pairs: the order rows are written in. */
+const FOREIGN_KEYS_SQL = `
+  SELECT cn.nspname || '.' || c.relname AS child, pn.nspname || '.' || p.relname AS parent
+    FROM pg_constraint k
+    JOIN pg_class c ON c.oid = k.conrelid JOIN pg_namespace cn ON cn.oid = c.relnamespace
+    JOIN pg_class p ON p.oid = k.confrelid JOIN pg_namespace pn ON pn.oid = p.relnamespace
+   WHERE k.contype = 'f' AND k.conrelid <> k.confrelid`
 
 export type RunDbDiffFn = (options: DbDiffOptions) => ReturnType<typeof runDbDiff>
 
@@ -70,8 +80,12 @@ export class DataCheck extends Check {
         include: 'both',
         ...dataScope(changed, ctx.config.ignoreSchemas ?? DEFAULT_IGNORE_SCHEMAS),
         timeoutSeconds: ctx.target?.checks?.schema?.timeout,
+        statements: true,
       })
-      return [...sqlToIssues(result, 'data'), ...sequences]
+      // A runner of an older shape gives the two strings: split them as before.
+      const { up, down } = result.statements ?? { up: splitStatements(result.up), down: splitStatements(result.down) }
+      const edges = await this.queryFn(ctx.source.dbUrl, FOREIGN_KEYS_SQL) as unknown as ForeignKeyEdge[]
+      return [...inForeignKeyOrder(dataIssues(up, down), edges ?? []), ...sequences]
     } catch (err) {
       if (err instanceof Error && err.message.includes('@dbdiff/cli is not installed')) {
         return sequences

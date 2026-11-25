@@ -50,11 +50,12 @@ describeE2E('e2e: a source that cannot be read', () => {
   it('aborts in every mode when the source cannot be reached', async () => {
     // A closed port: the harness trusts loopback, so a wrong password connects.
     const ws = await withSource('postgres', 'wrong', '1')
+    // 2, couldn't run, in every mode: it was 1, drift found, outside --ci.
     for (const [args, code] of [
-      [['diff', '--apply', '--json'], 1],
+      [['diff', '--apply', '--json'], 2],
       [['diff', '--apply', '--ci'], 2],
-      [['diff', '--apply'], 1],
-      [['diff', '--apply', '--json', '--allow-destructive'], 1],
+      [['diff', '--apply'], 2],
+      [['diff', '--apply', '--json', '--allow-destructive'], 2],
     ] as const) {
       const r = await h.cli([...args], { cwd: ws })
       expect(r.code, args.join(' ')).toBe(code)

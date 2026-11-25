@@ -8,6 +8,7 @@ import type { SupaForgeConfig, EnvironmentConfig } from './types/config.js'
 import type { PreflightReport } from './preflight.js'
 import { appendRunLog, redactArgs, type RunLogCheckSummary } from './run-log.js'
 import { installProcessGuard, noteJsonWritten } from './process-guard.js'
+import { errorJson, errorLine, preflightCode } from './utils/error-report.js'
 import { printJson } from './utils/json-stream.js'
 
 /**
@@ -63,8 +64,15 @@ export abstract class BaseCommand extends Command {
     // command before it produced any reached stderr only, and a script reading
     // stdout got nothing to parse. A deliberate exit (this.exit) is not an
     // error to report: its JSON, if any, is already written.
-    if (this.argv?.includes('--json') && !this._jsonWritten && !isExitRequest(err)) {
-      this.json({ error: redactUrls(describeFailure(err)) })
+    const json = Boolean(this.argv?.includes('--json'))
+    if (json && !this._jsonWritten && !isExitRequest(err)) {
+      this.json(errorJson(err, describeFailure(err)))
+    }
+    // For a script or a log: one line, whatever stderr's width, and no usage
+    // text after a flag error. A person at a terminal gets oclif's own.
+    if ((json || !process.stderr.isTTY) && !isExitRequest(err)) {
+      process.stderr.write(`${errorLine(err)}\n`)
+      ;(err as { skipOclifErrorHandling?: boolean }).skipOclifErrorHandling = true
     }
     return super.catch(err)
   }
@@ -102,9 +110,9 @@ export abstract class BaseCommand extends Command {
     } catch (err) {
       // Only a missing file means "run init"; a broken one says what is wrong.
       if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
-        this.error('Could not load supaforge.config.json. Run "supaforge init" first.')
+        this.error('Could not load supaforge.config.json. Run "supaforge init" first.', { code: 'E_CONFIG' })
       }
-      this.error(`Could not load supaforge.config.json: ${redactUrls(describeFailure(err))}`)
+      this.error(`Could not load supaforge.config.json: ${redactUrls(describeFailure(err))}`, { code: 'E_CONFIG' })
     }
   }
 
@@ -118,12 +126,12 @@ export abstract class BaseCommand extends Command {
   ): { envName: string; env: EnvironmentConfig } {
     const envName = envFlag ?? config.source
     if (!envName) {
-      this.error('No environment specified. Use --env=<name> or set "source" in your config.')
+      this.error('No environment specified. Use --env=<name> or set "source" in your config.', { code: 'E_CONFIG' })
     }
 
     const errors = validateSingleEnvConfig(config, envName)
     if (errors.length > 0) {
-      this.error(`Invalid configuration:\n  ${errors.join('\n  ')}`)
+      this.error(`Invalid configuration:\n  ${errors.join('\n  ')}`, { code: 'E_CONFIG' })
     }
 
     return { envName, env: config.environments[envName] }
@@ -143,7 +151,7 @@ export abstract class BaseCommand extends Command {
 
     const errors = validateConfig(config)
     if (errors.length > 0) {
-      this.error(`Invalid configuration:\n  ${errors.join('\n  ')}`)
+      this.error(`Invalid configuration:\n  ${errors.join('\n  ')}`, { code: 'E_CONFIG' })
     }
   }
 
@@ -175,10 +183,13 @@ export abstract class BaseCommand extends Command {
     if (!report.passed) {
       // Under --json the checks above went to stderr, so the JSON error names
       // what failed rather than pointing at lines a script never sees.
-      const reasons = report.checks.filter(c => !c.passed).map(c => `${c.label}: ${redactUrls(c.error ?? 'failed')}`)
-      this.error(this.argv.includes('--json')
+      const failed = report.checks.filter(c => !c.passed)
+      const reasons = failed.map(c => `${c.label}: ${redactUrls(c.error ?? 'failed')}`)
+      // Exit 2, couldn't run, as under --ci: 1 is drift found, and a script
+      // could not tell a database it could not reach from one that differed.
+      this.error(this.argv.includes('--json') || !process.stderr.isTTY
         ? `${commandName} aborted — ${reasons.join('; ')}`
-        : `${commandName} aborted — fix the issues above first.`, { exit: 1 })
+        : `${commandName} aborted — fix the issues above first.`, { exit: 2, code: preflightCode(failed) })
     }
     return report
   }

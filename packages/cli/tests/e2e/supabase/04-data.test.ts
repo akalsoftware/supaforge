@@ -2,8 +2,8 @@
  * E2E: Reference data drift detection and promotion (powered by @dbdiff/cli).
  *
  * Tests against real Supabase instances with:
- *   - Missing row: Enterprise plan (exists in source, not in target)
- *   - Modified row: Pro plan has different price (2900 in source, 1900 in target)
+ *   - A row missing: Enterprise plan (exists in source, not in target)
+ *   - A row modified: Pro plan has different price (2900 in source, 1900 in target)
  *
  * @dbdiff/cli is a pinned dependency, so it is always there. These tests used
  * to skip when the check found no drift, on the theory that dbdiff was
@@ -44,7 +44,7 @@ describe('e2e: data layer', () => {
     // and the target's sequence, which has handed out ids 1 and 2, would give
     // the next new plan the id the synced Enterprise row takes.
     expect(dataResult!.issues.map(i => i.title).sort())
-      .toEqual(['Missing row in plans', 'Modified row in plans', 'Sequence behind the rows in plans'])
+      .toEqual(['1 row missing from public.plans', '1 row modified in public.plans', 'Sequence behind the rows in plans'])
   })
 
   it.skipIf(shouldSkip())('should have SQL fixes for data drift', () => {

@@ -3,7 +3,7 @@ import { detectRuntime } from './local-pg.js'
 import { resolveConnectTimeoutMs, newPgClient } from './db.js'
 import { DB_PROBE_TIMEOUT_MS } from './constants.js'
 import { ok, warn, dim, cmd, bold } from './ui.js'
-import { redactUrls, describeFailure } from './utils/error.js'
+import { redactUrls, describeFailure, tlsFailureMessage } from './utils/error.js'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -18,6 +18,8 @@ export interface ConnCheckResult {
 export interface CheckEntry {
   label: string
   passed: boolean
+  /** A database's connection, or another check. */
+  kind?: 'database' | 'check'
   detail?: string
   error?: string
   hints?: string[]
@@ -80,7 +82,8 @@ export async function checkConnection(dbUrl: string): Promise<ConnCheckResult> {
   } catch (err) {
     return {
       reachable: false,
-      error: describeTimeout(describeFailure(err), connectTimeoutMs, DB_PROBE_TIMEOUT_MS),
+      // A certificate failure says what it is and what to do about it.
+      error: tlsFailureMessage(err, dbUrl) ?? describeTimeout(describeFailure(err), connectTimeoutMs, DB_PROBE_TIMEOUT_MS),
     }
   } finally {
     // A client that timed out mid-handshake still holds an open socket, which
@@ -280,7 +283,7 @@ export class Preflight {
       this.pending(null)
       if (result.reachable) {
         log(`      ${ok('✓')} ${db.label} reachable ${dim(`(PostgreSQL ${result.version})`)}`)
-        entries.push({ label: db.label, passed: true, detail: `PostgreSQL ${result.version}` })
+        entries.push({ label: db.label, kind: 'database', passed: true, detail: `PostgreSQL ${result.version}` })
       } else {
         log(`      ${warn('✗')} ${db.label} not reachable: ${redactUrls(describeFailure(result.error))}`)
         const hints = await buildConnectionHints(db.dbUrl, result.error)
@@ -288,7 +291,7 @@ export class Preflight {
           log(`\n      ${dim('Hints:')}`)
           for (const h of hints) log(`        ${dim('•')} ${h}`)
         }
-        entries.push({ label: db.label, passed: false, error: result.error, hints })
+        entries.push({ label: db.label, kind: 'database', passed: false, error: result.error, hints })
       }
     }
 

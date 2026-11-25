@@ -15,14 +15,18 @@ describe('writtenTable', () => {
   })
 })
 
-/** A client that answers the facts query with `facts` and records everything else. */
-function fakeClient(facts: Record<string, unknown> | undefined) {
+/** A table's foreign keys, by name, as the key query answers for them. */
+type Keys = Record<string, { rel: string; qualified: string; owned: boolean; self: boolean }>
+
+/** A client that answers the facts query with `facts`, the key query from `keys`, and records everything else. */
+function fakeClient(facts: Record<string, unknown> | undefined, keys: Keys = {}) {
   const ran: string[] = []
   return {
     ran,
     client: {
-      query: async (sql: string) => {
+      query: async (sql: string, params?: unknown[]) => {
         if (sql.includes('to_regclass($1)')) return { rows: facts ? [facts] : [] }
+        if (sql.includes('k.conname = $3')) return { rows: keys[String(params?.[2])] ? [keys[String(params?.[2])]] : [] }
         ran.push(sql)
         return { rows: [] }
       },
@@ -30,7 +34,8 @@ function fakeClient(facts: Record<string, unknown> | undefined) {
   }
 }
 
-const TREE = { rel: 'tree', owned: true, triggers: ['touch'], selfKeys: [{ name: 'tree_parent_fkey', qualified: 'public.tree_parent_fkey' }] }
+const TREE = { rel: 'tree', owned: true, triggers: ['touch'] }
+const TREE_KEY: Keys = { tree_parent_fkey: { rel: 'tree', qualified: 'public.tree_parent_fkey', owned: true, self: true } }
 
 describe('DataSyncGuard', () => {
   it('holds a table\'s triggers off once, and puts them back at the end', async () => {
@@ -52,16 +57,16 @@ describe('DataSyncGuard', () => {
     expect(guard.warnings[0]).toMatch(/Triggers on tree fired .*does not own the table/)
   })
 
-  it('defers only the table\'s own key, once, and checks it before the triggers come back', async () => {
-    const { ran, client } = fakeClient(TREE)
+  it('defers the key a row fails, once, and checks it before the triggers come back', async () => {
+    const { ran, client } = fakeClient(TREE, TREE_KEY)
     const guard = new DataSyncGuard(client as never)
     const sql = 'INSERT INTO "tree" VALUES (1, 2);'
     await guard.before(sql)
-    const fk = Object.assign(new Error('violates'), { code: '23503', constraint: 'tree_parent_fkey' })
-    expect(await guard.deferSelfReference(sql, fk)).toBe(true)
-    expect(await guard.deferSelfReference(sql, fk)).toBe(false)
-    expect(await guard.deferSelfReference(sql, { code: '23503', constraint: 'other_fkey' })).toBe(false)
-    expect(await guard.deferSelfReference(sql, { code: '23505', constraint: 'tree_parent_fkey' })).toBe(false)
+    const fk = Object.assign(new Error('violates'), { code: '23503', schema: 'public', table: 'tree', constraint: 'tree_parent_fkey' })
+    expect(await guard.deferForeignKey(sql, fk)).toBe(true)
+    expect(await guard.deferForeignKey(sql, fk)).toBe(false)
+    expect(await guard.deferForeignKey(sql, { code: '23503', table: 'tree', constraint: 'unknown_fkey' })).toBe(false)
+    expect(await guard.deferForeignKey(sql, { code: '23505', table: 'tree', constraint: 'tree_parent_fkey' })).toBe(false)
     ran.length = 0
     await guard.finish()
     expect(ran).toEqual([
@@ -76,6 +81,23 @@ describe('DataSyncGuard', () => {
     const guard = new DataSyncGuard(client as never)
     await guard.before('INSERT INTO "gone" VALUES (1);')
     expect(ran).toEqual([])
-    expect(await guard.deferSelfReference('INSERT INTO "gone" VALUES (1);', { code: '23503' })).toBe(false)
+    expect(await guard.deferForeignKey('INSERT INTO "gone" VALUES (1);', { code: '23503' })).toBe(false)
+  })
+
+  it('defers another table\'s key too, the one a delete fails, and says which', async () => {
+    const keys: Keys = { orders_user_fkey: { rel: 'orders', qualified: 'public.orders_user_fkey', owned: true, self: false } }
+    const { ran, client } = fakeClient({ ...TREE, triggers: [] }, keys)
+    const guard = new DataSyncGuard(client as never)
+    const sql = 'DELETE FROM "users" WHERE "id" = 1;'
+    expect(await guard.deferForeignKey(sql, { code: '23503', schema: 'public', table: 'orders', constraint: 'orders_user_fkey' })).toBe(true)
+    expect(ran).toEqual(['ALTER TABLE orders ALTER CONSTRAINT "orders_user_fkey" DEFERRABLE INITIALLY DEFERRED'])
+    expect(guard.notes[0]).toMatch(/orders's rows against its foreign key "orders_user_fkey".*tables that reference each other/)
+  })
+
+  it('leaves a key it does not own to fail', async () => {
+    const keys: Keys = { orders_user_fkey: { rel: 'orders', qualified: 'public.orders_user_fkey', owned: false, self: false } }
+    const { client } = fakeClient(TREE, keys)
+    const guard = new DataSyncGuard(client as never)
+    expect(await guard.deferForeignKey('INSERT INTO "orders" VALUES (1);', { code: '23503', table: 'orders', constraint: 'orders_user_fkey' })).toBe(false)
   })
 })

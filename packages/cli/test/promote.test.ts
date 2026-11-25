@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { promote, planWork, outOfScopeReason } from '../src/promote.js'
+import { promote, planWork, outOfScopeReason, OUTSIDE_TABLES } from '../src/promote.js'
 import type { ScanResult } from '../src/types/drift.js'
 
 function makeScanResult(overrides: Partial<ScanResult> = {}): ScanResult {
@@ -512,12 +512,14 @@ describe('promote scoping', () => {
       tableFilter: { tables: ['users'] },
     })
 
-    expect(result.applied.map(a => a.issueId).sort()).toEqual(['schema-alter-1', 'schema-create-function-4'])
+    expect(result.applied.map(a => a.issueId).sort()).toEqual(['schema-alter-1'])
     expect(result.errors).toHaveLength(0)
 
     const skipped = Object.fromEntries(result.skipped.map(s => [s.issueId, s.reason]))
     expect(skipped['schema-create-view-2']).toContain("'orders'")
     expect(skipped['schema-create-trigger-3']).toContain("'orders'")
+    // Only the excluded table's trigger needed the function: it stays out too.
+    expect(skipped['schema-create-function-4']).toBe(OUTSIDE_TABLES)
   })
 
   it('applies every fix when no table filter is active', async () => {
@@ -909,5 +911,41 @@ describe('planWork --only and a new function\'s default grants', () => {
       'roles-grant-default-anon.public.admin_reset(p integer)',
     ]))
     expect(ids).not.toContain('roles-grant-default-anon.public.other_fn()')
+  })
+})
+
+describe('--tables and the fixes that name no table', () => {
+  const fix = (id: string, up: string) => ({ id, check: 'schema' as const, severity: 'warning' as const, title: id, description: 'x', sql: { up, down: '' } })
+  const plan = (issues: ReturnType<typeof fix>[], tables: string[]) => planWork(makeScanResult({
+    checks: [{ check: 'schema', status: 'drifted', durationMs: 1, issues }],
+  }), { tableFilter: { tables } })
+
+  it('brings along what a selected table needs, and what acts on that, and nothing else', () => {
+    const result = plan([
+      fix('type', `CREATE TYPE "order_state" AS ENUM ('new', 'paid');`),
+      fix('table', `CREATE TABLE "orders" ("id" int, "state" "order_state", CONSTRAINT k FOREIGN KEY ("id") REFERENCES "users"("id") ON UPDATE NO ACTION ON DELETE NO ACTION);`),
+      fix('fn', `CREATE OR REPLACE FUNCTION public.touch() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;`),
+      fix('trigger', 'CREATE TRIGGER t BEFORE UPDATE ON public.orders FOR EACH ROW EXECUTE FUNCTION touch();'),
+      fix('grant-fn', 'GRANT EXECUTE ON FUNCTION public.touch() TO "anon";'),
+      fix('seq-grant', 'GRANT SELECT, USAGE ON SEQUENCE "public"."orders_id_seq" TO "anon";'),
+      fix('other-type', `CREATE TYPE "unrelated" AS ENUM ('a');`),
+      fix('other-fn', 'CREATE OR REPLACE FUNCTION public.report() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$;'),
+      fix('defaults', 'ALTER DEFAULT PRIVILEGES FOR ROLE "postgres" IN SCHEMA "public" GRANT SELECT ON TABLES TO "anon";'),
+      fix('schema-grant', 'GRANT USAGE ON SCHEMA "public" TO "anon";'),
+    ], ['orders', 'users'])
+    expect(result.sqlStatements.map(s => s.issueId).sort()).toEqual(['fn', 'grant-fn', 'seq-grant', 'table', 'trigger', 'type'])
+    expect(Object.fromEntries(result.skipped.map(s => [s.issueId, s.reason]))).toEqual({
+      'other-type': OUTSIDE_TABLES, 'other-fn': OUTSIDE_TABLES, defaults: OUTSIDE_TABLES, 'schema-grant': OUTSIDE_TABLES,
+    })
+  })
+
+  it('a table with a foreign key is in scope, not "depends on table no"', () => {
+    const result = plan([fix('table', `CREATE TABLE "orders" ("id" int REFERENCES "users"("id") ON UPDATE NO ACTION);`)], ['orders', 'users'])
+    expect(result.skipped).toEqual([])
+  })
+
+  it('a grant on an excluded table is out, and says which table', () => {
+    const result = plan([fix('grant', 'GRANT SELECT ON TABLE "public"."customers" TO "anon";')], ['orders'])
+    expect(result.skipped[0].reason).toBe("Depends on table 'customers', excluded by --tables")
   })
 })
