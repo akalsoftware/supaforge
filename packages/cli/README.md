@@ -376,10 +376,24 @@ npx @akal/supaforge diff --ci
 | --- | --- |
 | `0` | Did what was asked, including when there was nothing to do |
 | `1` | Found drift, declined to act, or something failed or was left out |
-| `2` | Couldn't run: a usage error, or under `--ci` a check that couldn't finish |
+| `2` | Couldn't run: a usage or config error, a database it couldn't reach, or under `--ci` a check that couldn't finish |
 
 `--ci` fails on critical drift by default. Set the threshold with
 `--fail-on=warning` or `--fail-on=any`.
+
+When stderr isn't a terminal, as in CI or a log collector, an error is one
+line, `Error: <message>`, never wrapped or followed by the usage text. Under
+`--json`, stdout carries it as `{ "error": "...", "code": "..." }`, with a
+code that stays the same whatever the wording:
+
+| Code | Meaning |
+| --- | --- |
+| `E_USAGE` | The command line: an unknown flag, command or value |
+| `E_CONFIG` | `supaforge.config.json` is missing, unreadable or invalid |
+| `E_CONNECT` | A database couldn't be reached, or refused the login |
+| `E_TLS` | A database's certificate couldn't be verified |
+| `E_PRECONDITION` | Something the command needs first is missing, such as a client tool |
+| `E_FAILED` | Anything else that stopped the command |
 
 ## MCP (AI agents)
 
